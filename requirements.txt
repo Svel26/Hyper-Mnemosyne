@@ -1,0 +1,12 @@
+torch>=2.2.0
+triton>=2.2.0
+mamba-ssm>=1.2.0.post1
+causal-conv1d>=1.2.0.post1
+transformers>=4.38.0
+datasets>=2.17.0
+bitsandbytes>=0.42.0
+einops>=0.7.0
+scipy>=1.12.0
+numpy>=1.26.0
+packaging
+ninja
