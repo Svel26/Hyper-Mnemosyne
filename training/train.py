@@ -103,13 +103,42 @@ def train(args):
             log_str = f"Step {step}: Loss {total_loss.item():.4f} (Gen: {loss_gen.item():.4f}, JEPA: {loss_jepa.item():.4f})"
             
         elif config.training_stage == "memory":
-            # Optimize ONLY the Titans Memory 'Surprise'
-            # Backbone is frozen (handled in optimizer setup)
-            total_loss = mem_loss_ctx
+            # Optimize Titans Memory Meta-Parameters
+            # Backbone is frozen (handled in optimizer setup or via requires_grad)
             
-            log_str = f"Step {step}: Memory Loss {total_loss.item():.4f}"
+            # Meta-Learning Protocol:
+            # 1. Split sequence/batch into "Support" (A) and "Query" (B)
+            # Since input_ids is [B, S], let's split along Sequence dimension for causality
+            # S = 4096 -> S_support = 2048, S_query = 2048
+            
+            cutoff = input_ids.shape[1] // 2
+            input_A = input_ids[:, :cutoff]
+            input_B = input_ids[:, cutoff:]
+            
+            # --- Inner Loop Step (on Batch A) ---
+            # Forward pass to get surprise on A
+            _, _, loss_A = model(input_A)
+            
+            # Compute new weights for memory based on loss_A
+            # This uses the current meta-params (step_size, decay)
+            # We need access to the memory layer directly
+            updated_weights = model.memory.get_updated_weights(loss_A)
+            
+            # --- Outer Loop Step (on Batch B) ---
+            # Forward pass on B using the *updated* weights
+            # This checks "Did the update using these meta-params actually help prediction/memory?"
+            # We need to pass the functional weights to the model
+            
+            # Note: We need to modify model.forward to accept 'memory_params'
+            # (which I handled in the previous tool call)
+            _, _, loss_B = model(input_B, memory_params=updated_weights)
+            
+            total_loss = loss_B
+            log_str = f"Step {step}: Meta-Loss {total_loss.item():.4f} (Inner Loss: {loss_A.item():.4f})"
             
         # Backward
+        # For Stage 2, total_loss (loss_B) depends on updated_weights, which depends on step_size.
+        # So backward() will carry gradients to step_size.
         total_loss.backward()
 
         # Step

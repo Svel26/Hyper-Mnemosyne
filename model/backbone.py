@@ -1,13 +1,6 @@
 import torch
 import torch.nn as nn
-try:
-    from mamba_ssm import Mamba2
-except ImportError:
-    # Fallback or mock for now if not installed
-    class Mamba2(nn.Module):
-        def __init__(self, **kwargs):
-            super().__init__()
-            pass
+from mamba_ssm import Mamba2
 
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaConfig, LlamaRotaryEmbedding
 
@@ -153,7 +146,7 @@ class HyperMnemosyne(nn.Module):
             nn.Linear(config.predictor_dim, config.d_model)
         )
 
-    def forward(self, input_ids):
+    def forward(self, input_ids, **kwargs):
         x = self.embeddings(input_ids)
         B, S, D = x.shape
         
@@ -172,7 +165,9 @@ class HyperMnemosyne(nn.Module):
         # Titans Memory Interaction
         # In the blueprint, Titans learns at test time to minimize "Surprise".
         # We integrate it by retrieving memory and adding it to the input stream.
-        memory_out, memory_loss = self.memory(x)
+        # memory_params: Optional dict for functional forward pass during meta-learning
+        mem_params = kwargs.get('memory_params', None)
+        memory_out, memory_loss = self.memory(x, memory_params=mem_params)
         
         # Add memory context to the stream
         # (Simple addition for now, could be gated)

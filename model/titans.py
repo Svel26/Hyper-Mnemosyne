@@ -18,39 +18,61 @@ class TitansMemoryLayer(nn.Module):
         self.config = config
         self.memory_mlp = MemoryMLP(config)
         
-        # Optim parameters for test-time training
-        self.step_size = 0.01
-        self.decay = 0.99
+        # Meta-Parameters for test-time training
+        # Initialize step_size to a small value, sigmoid will constrain it to (0, 1) or similar range
+        # Using softplus or simple parameter for now.
+        self.step_size = nn.Parameter(torch.tensor(0.01))
+        self.decay = nn.Parameter(torch.tensor(0.99))
         
-    def forward(self, x, update_memory=False):
+    def forward(self, x, memory_params=None):
         """
         x: [B, S, D]
+        memory_params: Optional dict of weights for the memory MLP (if using updated weights)
         """
-        # 1. Retrieve from memory
-        # In Titans, the memory is just the MLP.
-        # retrieval = MLP(x)
-        mem_out = self.memory_mlp(x)
+        # Functional call if params provided
+        if memory_params is not None:
+             # This requires torch > 2.0 ideally, or manual functional application.
+             # MemoryMLP is simple: w2(act(w1(x)))
+             # Let's unpack manually for clarity and stability across versions
+             w1 = memory_params['w1']
+             w2 = memory_params['w2']
+             act = nn.functional.silu
+             
+             hidden = act(torch.matmul(x, w1.t()))
+             mem_out = torch.matmul(hidden, w2.t())
+        else:
+             mem_out = self.memory_mlp(x)
         
-        # 2. Update memory (Test-Time Training)
-        # For the two-stage training loop, we return a loss term
-        # In Stage 1: This is 0 (or ignored)
-        # In Stage 2: This is the reconstruction error ||x - MLP(x)||
-        
-        # Simple reconstruction loss (Auto-associative)
-        # We want the memory to be able to reconstruct the input (identity mapping with bottleneck)
-        # or predict future (Titans paper).
-        # Let's use reconstruction for stability in this prototype.
+        # Surprise Loss (Reconstruction)
         surprise_loss = F.mse_loss(mem_out, x.detach())
         
         return mem_out, surprise_loss
         
-    def update_weights(self, loss):
+    def get_updated_weights(self, loss, current_params=None):
         """
-        Manually apply GD step to memory_mlp weights
+        Differentiable weight update step.
+        Returns new weights without modifying in-place (unless we want to).
+        For meta-learning, we need the new weights to be a function of the old weights + meta-params.
         """
-        grads = torch.autograd.grad(loss, self.memory_mlp.parameters(), create_graph=False)
-        with torch.no_grad():
-            for p, g in zip(self.memory_mlp.parameters(), grads):
-                p.data = p.data - self.step_size * g
-                # Weight decay
-                p.data = p.data * self.decay
+        if current_params is None:
+            # Use current model weights
+            ws = {'w1': self.memory_mlp.w1.weight, 'w2': self.memory_mlp.w2.weight}
+        else:
+            ws = current_params
+            
+        # Calculate gradients of the loss w.r.t weights
+        # We need create_graph=True if we want to differentiate through this step later w.r.t step_size
+        grads = torch.autograd.grad(loss, ws.values(), create_graph=True)
+        
+        new_weights = {}
+        for (name, p), g in zip(ws.items(), grads):
+            # SGD Step: p_new = p - step_size * g
+            # Decay: p_new = p_new * decay
+            
+            # Note: step_size and decay are learnable parameters
+            new_p = p - self.step_size * g
+            new_p = new_p * self.decay
+            new_weights[name] = new_p
+            
+        return new_weights
+
