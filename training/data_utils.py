@@ -52,4 +52,6 @@ def offline_generate_views(input_file, output_file, model_name="llama3-8b"):
     # 2. Iterate lines
     # 3. Prompt: "Rewrite this: {line}"
     # 4. Save pair
-    pass
+    # This function is intended to be run as a separate script to prepare data.
+    # It requires a loaded LLM and is not part of the training loop.
+    raise NotImplementedError("Run this offline to generate data.")

@@ -120,6 +120,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="data/")
     parser.add_argument("--num_samples", type=int, default=20000)
+    parser.add_argument("--seq_len", type=int, default=4096)
     args = parser.parse_args()
     
-    prepare_fineweb(args.output_dir, num_samples=args.num_samples)
+    prepare_fineweb(args.output_dir, num_samples=args.num_samples, seq_len=args.seq_len)

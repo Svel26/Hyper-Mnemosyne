@@ -36,6 +36,24 @@ def get_param_groups(model):
         {'params': vector_params, 'optimizer': 'adamw', 'lr': 0.001}
     ]
 
+def save_checkpoint(model, step, keep=2):
+    """
+    Saves a checkpoint and rotates old ones to save disk space.
+    """
+    import glob
+    import os
+    
+    filename = f"model_step_{step}.pt"
+    print(f"Saving checkpoint to {filename}...")
+    torch.save(model.state_dict(), filename)
+    
+    # Rotate
+    checkpoints = sorted(glob.glob("model_step_*.pt"), key=os.path.getmtime)
+    if len(checkpoints) > keep:
+        for old_ckpt in checkpoints[:-keep]:
+            print(f"Removing old checkpoint {old_ckpt}...")
+            os.remove(old_ckpt)
+
 def train(args):
     config = HyperMnemosyneConfig()
     
@@ -44,6 +62,21 @@ def train(args):
     model = HyperMnemosyne(config)
     model.to("cuda" if torch.cuda.is_available() else "cpu")
     
+    # Load Pretrained Weights
+    if args.pretrained_path:
+        print(f"Loading pretrained backbone from {args.pretrained_path}...")
+        state_dict = torch.load(args.pretrained_path, map_location=model.embeddings.weight.device)
+        model.load_state_dict(state_dict)
+        
+    # Freezing Logic for Stage 2
+    if config.training_stage == "memory":
+        print("Stage 2: Freezing backbone, training Titans Memory only.")
+        for name, param in model.named_parameters():
+            if "memory" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+                
     # 2. Variable Grouping
     param_groups = get_param_groups(model)
     
@@ -152,7 +185,7 @@ def train(args):
         # If in Stage 2, we would also run memory updates.
         # But this is the base loop.
         if step % 100 == 0:
-             torch.save(model.state_dict(), f"model_step_{step}.pt")
+             save_checkpoint(model, step)
 
     print("Saving final model...")
     torch.save(model.state_dict(), "model_final.pt")
@@ -162,6 +195,11 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="data/")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=100)
+    parser.add_argument("--pretrained_path", type=str, default=None, help="Path to pretrained backbone checkpoint")
     args = parser.parse_args()
     
     train(args)
+
+
+
+

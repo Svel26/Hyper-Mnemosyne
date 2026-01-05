@@ -20,7 +20,8 @@ class HyperMnemosyneConfig:
     memory_width: int = 2048
     
     # Training / Optimization
-    max_seq_len: int = 128  # Ultra-compact memory setting
+    max_seq_len: int = 4096  # Blueprint requirement
+    gradient_checkpointing: bool = True
     
     # JEPA
     jepa_weight: float = 0.5  # Weight of the latent prediction loss
@@ -30,4 +31,4 @@ class HyperMnemosyneConfig:
     # "backbone": Train mHC + Mamba-2 + JEPA (Titans frozen/disabled)
     # "backbone": Train mHC + Mamba-2 + JEPA (Titans frozen/disabled)
     # "memory": Freeze backbone, Train Titans Memory
-    training_stage: str = "backbone"
+    training_stage: str = "memory"

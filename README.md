@@ -19,7 +19,12 @@ It synthesizes three cutting-edge architectures into a single "Neural Brain":
 We provide a helper script to set up the environment, download data, and start training:
 
 ```bash
+```bash
+# Provide permissions
 chmod +x start_training.sh
+
+# Run the all-in-one launcher
+# This will setup the venv, install requirements, generate data, and start Stage 1 training.
 ./start_training.sh
 ```
 
@@ -27,7 +32,7 @@ chmod +x start_training.sh
 
 ```bash
 # 1. Clone & Setup Entivonment
-git clone https://github.com/yourusername/Hyper-Mnemosyne
+git clone https://github.com/svel26/Hyper-Mnemosyne
 cd Hyper-Mnemosyne
 python3 -m venv venv
 source venv/bin/activate
@@ -57,8 +62,24 @@ The model supports a **Two-Stage Training** protocol (configurable in `config.py
 ## 🛠️ Usage
 
 ### Training
+The training process is split into two stages:
+
+#### Stage 1: Backbone Training
+Trains the core Mamba-2 model and JEPA predictor.
 ```bash
-python3 -m training.train --batch_size 1 --max_steps 5000
+python3 -m training.train --batch_size 1 --max_steps 5000 --training_stage backbone
+```
+
+#### Stage 2: Memory Training (Titans)
+Freezes the backbone and trains the Titans Neural Memory module. Requires a pretrained Stage 1 model.
+```bash
+python3 -m training.train --batch_size 1 --max_steps 1000 --training_stage memory --pretrained_path model_final.pt
+```
+
+### Data Generation
+Hyper-Mnemosyne uses a JEPA-masked version of FineWeb-Edu.
+```bash
+python3 scripts/prepare_fineweb.py --num_samples 100000 --seq_len 4096 --output_dir data/
 ```
 
 ### Inference
@@ -85,4 +106,4 @@ python3 inference.py --prompt "The future of AI is"
 ```
 
 ## License
-MIT License. See [LICENSE](LICENSE) for details.
+Apache License. See [LICENSE](LICENSE) for details.

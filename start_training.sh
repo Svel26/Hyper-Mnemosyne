@@ -13,10 +13,12 @@ fi
 
 # 2. Check Data
 if [ ! -d "data" ] || [ -z "$(ls -A data)" ]; then
-    echo "Generatiing FineWeb-Edu Data (10k samples)..."
-    python3 scripts/prepare_fineweb.py --num_samples 10000 --output_dir data/
+    echo "Generating FineWeb-Edu Data (10k samples, Sequence Length 4096)..."
+    # Adjust --seq_len if you have less than 24GB VRAM (e.g. 1024 or 2048)
+    python3 scripts/prepare_fineweb.py --num_samples 10000 --output_dir data/ --seq_len 4096
 fi
 
 # 3. Train
-echo "Starting Training (Press Ctrl+C to stop)..."
-python3 -m training.train --batch_size 1 --max_steps 5000
+echo "Starting Stage 1 Training (Backbone)..."
+# Adjust batch_size or set gradient_checkpointing in config.py if OOM
+python3 -m training.train --batch_size 1 --max_steps 5000 --training_stage backbone

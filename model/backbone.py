@@ -175,13 +175,36 @@ class HyperMnemosyne(nn.Module):
         
         residual_state = None
         
+        # Gradient Checkpointing
+        use_checkpointing = self.config.gradient_checkpointing and self.training
+        
         for layer in self.layers:
-            residual_state = layer(
-                x,
-                residual_state=residual_state,
-                position_embeddings=position_embeddings,
-                attention_mask=attention_mask
-            )
+            if use_checkpointing:
+                # We need to ensure args are tensors or valid for checkpointing
+                # layer is a module (callable)
+                # checkpoint(function, *args)
+                # We pass the layer instance as the function? Yes, layer.__call__
+                # But checkpoint typically expects a function.
+                # Standard pattern: checkpoint(layer, x, residual_state, ...)
+                
+                # Checkpoint requires inputs to have requires_grad for at least one arg?
+                # x has it.
+                
+                residual_state = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    x,
+                    residual_state,
+                    position_embeddings,
+                    attention_mask,
+                    use_reentrant=False
+                )
+            else:
+                residual_state = layer(
+                    x,
+                    residual_state=residual_state,
+                    position_embeddings=position_embeddings,
+                    attention_mask=attention_mask
+                )
             
         # Final aggregation
         final_out = residual_state.mean(dim=2)

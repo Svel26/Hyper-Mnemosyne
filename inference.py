@@ -11,7 +11,8 @@ def generate(args):
     # Load Config
     config = HyperMnemosyneConfig()
     # Ensure config matches training (safe to hardcode for this demo unless verified)
-    config.max_seq_len = 1024 
+    # Ensure config matches training (safe to hardcode for this demo unless verified)
+    # config.max_seq_len = 4096 # Config defaults are now correct from config.py 
     
     # Load Model
     print("Loading model architecture...")
