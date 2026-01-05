@@ -56,6 +56,8 @@ def save_checkpoint(model, step, keep=2):
 
 def train(args):
     config = HyperMnemosyneConfig()
+    if args.training_stage:
+        config.training_stage = args.training_stage
     
     # 1. Initialize Model
     print("Initializing Hyper-Mnemosyne...")
@@ -93,6 +95,11 @@ def train(args):
     
     optimizers = [opt_muon, opt_adam]
     
+    # Compile
+    if args.compile:
+        print("Compiling model with torch.compile...")
+        model = torch.compile(model)
+
     # 4. Data
     dataloader = create_dataloader(args.data_dir, args.batch_size, config.max_seq_len)
     
@@ -107,76 +114,80 @@ def train(args):
         input_ids = input_ids.to(model.embeddings.weight.device)
         target_ids = target_ids.to(model.embeddings.weight.device)
         
-        # Zero grad
-        for opt in optimizers:
-            opt.zero_grad()
+        # Zero grad only at start of accumulation cycle
+        if step % args.grad_accum_steps == 0:
+            for opt in optimizers:
+                opt.zero_grad()
             
         # JEPA Hybrid Training Step
-        # 1. Forward pass on Context
-        logits_ctx, hidden_ctx, mem_loss_ctx = model(input_ids)
-        
-        # 2. Forward pass on Target
-        logits_tgt, hidden_tgt, _ = model(target_ids)
-        
-        total_loss = 0
-        
-        if config.training_stage == "backbone":
-            # Optimize Generation + JEPA
-            # Titans memory loss is ignored or acts as auxiliary (optional)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            # 1. Forward pass on Context
+            logits_ctx, hidden_ctx, mem_loss_ctx = model(input_ids)
             
-            # A. Generative Loss
-            loss_gen = nn.functional.cross_entropy(logits_tgt.view(-1, config.vocab_size), target_ids.view(-1))
+            # 2. Forward pass on Target
+            logits_tgt, hidden_tgt, _ = model(target_ids)
             
-            # B. JEPA Latent Loss
-            pred_hidden = model.jepa_predictor(hidden_ctx)
-            loss_jepa = nn.functional.mse_loss(pred_hidden, hidden_tgt.detach())
+            total_loss = 0
             
-            total_loss = loss_gen + (config.jepa_weight * loss_jepa)
-            
-            log_str = f"Step {step}: Loss {total_loss.item():.4f} (Gen: {loss_gen.item():.4f}, JEPA: {loss_jepa.item():.4f})"
-            
-        elif config.training_stage == "memory":
-            # Optimize Titans Memory Meta-Parameters
-            # Backbone is frozen (handled in optimizer setup or via requires_grad)
-            
-            # Meta-Learning Protocol:
-            # 1. Split sequence/batch into "Support" (A) and "Query" (B)
-            # Since input_ids is [B, S], let's split along Sequence dimension for causality
-            # S = 4096 -> S_support = 2048, S_query = 2048
-            
-            cutoff = input_ids.shape[1] // 2
-            input_A = input_ids[:, :cutoff]
-            input_B = input_ids[:, cutoff:]
-            
-            # --- Inner Loop Step (on Batch A) ---
-            # Forward pass to get surprise on A
-            _, _, loss_A = model(input_A)
-            
-            # Compute new weights for memory based on loss_A
-            # This uses the current meta-params (step_size, decay)
-            # We need access to the memory layer directly
-            updated_weights = model.memory.get_updated_weights(loss_A)
-            
-            # --- Outer Loop Step (on Batch B) ---
-            # Forward pass on B using the *updated* weights
-            # This checks "Did the update using these meta-params actually help prediction/memory?"
-            # We need to pass the functional weights to the model
-            
-            # Note: We need to modify model.forward to accept 'memory_params'
-            # (which I handled in the previous tool call)
-            _, _, loss_B = model(input_B, memory_params=updated_weights)
-            
-            total_loss = loss_B
-            log_str = f"Step {step}: Meta-Loss {total_loss.item():.4f} (Inner Loss: {loss_A.item():.4f})"
+            if config.training_stage == "backbone":
+                # Optimize Generation + JEPA
+                # Titans memory loss is ignored or acts as auxiliary (optional)
+                
+                # A. Generative Loss
+                loss_gen = nn.functional.cross_entropy(logits_tgt.view(-1, config.vocab_size), target_ids.view(-1))
+                
+                # B. JEPA Latent Loss
+                pred_hidden = model.jepa_predictor(hidden_ctx)
+                loss_jepa = nn.functional.mse_loss(pred_hidden, hidden_tgt.detach())
+                
+                total_loss = loss_gen + (config.jepa_weight * loss_jepa)
+                
+                log_str = f"Step {step}: Loss {total_loss.item():.4f} (Gen: {loss_gen.item():.4f}, JEPA: {loss_jepa.item():.4f})"
+                
+            elif config.training_stage == "memory":
+                # Optimize Titans Memory Meta-Parameters
+                # Backbone is frozen (handled in optimizer setup or via requires_grad)
+                
+                # Meta-Learning Protocol:
+                # 1. Split sequence/batch into "Support" (A) and "Query" (B)
+                # Since input_ids is [B, S], let's split along Sequence dimension for causality
+                # S = 4096 -> S_support = 2048, S_query = 2048
+                
+                cutoff = input_ids.shape[1] // 2
+                input_A = input_ids[:, :cutoff]
+                input_B = input_ids[:, cutoff:]
+                
+                # --- Inner Loop Step (on Batch A) ---
+                # Forward pass to get surprise on A
+                _, _, loss_A = model(input_A)
+                
+                # Compute new weights for memory based on loss_A
+                # This uses the current meta-params (step_size, decay)
+                # We need access to the memory layer directly
+                updated_weights = model.memory.get_updated_weights(loss_A)
+                
+                # --- Outer Loop Step (on Batch B) ---
+                # Forward pass on B using the *updated* weights
+                # This checks "Did the update using these meta-params actually help prediction/memory?"
+                # We need to pass the functional weights to the model
+                
+                # Note: We need to modify model.forward to accept 'memory_params'
+                # (which I handled in the previous tool call)
+                _, _, loss_B = model(input_B, memory_params=updated_weights)
+                
+                total_loss = loss_B
+                log_str = f"Step {step}: Meta-Loss {total_loss.item():.4f} (Inner Loss: {loss_A.item():.4f})"
+                
+            # Scale loss for gradient accumulation
+            loss_scaled = total_loss / args.grad_accum_steps
             
         # Backward
-        # For Stage 2, total_loss (loss_B) depends on updated_weights, which depends on step_size.
-        # So backward() will carry gradients to step_size.
-        total_loss.backward()
+        loss_scaled.backward()
 
         # Step
-        for opt in optimizers:
-            opt.step()
+        if (step + 1) % args.grad_accum_steps == 0:
+            for opt in optimizers:
+                opt.step()
         
         if step % 10 == 0:
             print(log_str)
@@ -196,7 +207,17 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=100)
     parser.add_argument("--pretrained_path", type=str, default=None, help="Path to pretrained backbone checkpoint")
+    parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile for speedup")
+    parser.add_argument("--training_stage", type=str, default=None, choices=["backbone", "memory"], help="Override config training stage")
     args = parser.parse_args()
+    
+    # Override config if argument is provided
+    if args.training_stage:
+        # We need to pass this to train() or handle it inside train()
+        # Since train() creates a new config instance: config = HyperMnemosyneConfig()
+        # We should modify train() to accept overrides or args.
+        pass # Handling inside train() now.
     
     train(args)
 
