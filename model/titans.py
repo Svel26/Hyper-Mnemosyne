@@ -32,18 +32,17 @@ class TitansMemoryLayer(nn.Module):
         mem_out = self.memory_mlp(x)
         
         # 2. Update memory (Test-Time Training)
-        if update_memory:
-            # Compute 'Surprise' or loss
-            # Simplified Titans rule:
-            # Loss = || x_future - MLP(x_past) ||^2? 
-            # Or Gradient of the core task?
-            # Blueprint: "Calculate gradient step to update weights based on Surprise Metric".
-            # Usually strict implementation requires a partial backward pass here.
-            
-            # We will just return the memory output for now.
-            pass
-            
-        return mem_out
+        # For the two-stage training loop, we return a loss term
+        # In Stage 1: This is 0 (or ignored)
+        # In Stage 2: This is the reconstruction error ||x - MLP(x)||
+        
+        # Simple reconstruction loss (Auto-associative)
+        # We want the memory to be able to reconstruct the input (identity mapping with bottleneck)
+        # or predict future (Titans paper).
+        # Let's use reconstruction for stability in this prototype.
+        surprise_loss = F.mse_loss(mem_out, x.detach())
+        
+        return mem_out, surprise_loss
         
     def update_weights(self, loss):
         """

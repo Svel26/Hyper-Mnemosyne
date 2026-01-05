@@ -78,26 +78,56 @@ def train(args):
         for opt in optimizers:
             opt.zero_grad()
             
-        # Forward
-        logits = model(input_ids)
+        # JEPA Hybrid Training Step
+        # 1. Forward pass on Context
+        logits_ctx, hidden_ctx, mem_loss_ctx = model(input_ids)
         
-        # Loss
-        loss = nn.functional.cross_entropy(logits.view(-1, config.vocab_size), target_ids.view(-1))
+        # 2. Forward pass on Target
+        logits_tgt, hidden_tgt, _ = model(target_ids)
         
+        total_loss = 0
+        
+        if config.training_stage == "backbone":
+            # Optimize Generation + JEPA
+            # Titans memory loss is ignored or acts as auxiliary (optional)
+            
+            # A. Generative Loss
+            loss_gen = nn.functional.cross_entropy(logits_tgt.view(-1, config.vocab_size), target_ids.view(-1))
+            
+            # B. JEPA Latent Loss
+            pred_hidden = model.jepa_predictor(hidden_ctx)
+            loss_jepa = nn.functional.mse_loss(pred_hidden, hidden_tgt.detach())
+            
+            total_loss = loss_gen + (config.jepa_weight * loss_jepa)
+            
+            log_str = f"Step {step}: Loss {total_loss.item():.4f} (Gen: {loss_gen.item():.4f}, JEPA: {loss_jepa.item():.4f})"
+            
+        elif config.training_stage == "memory":
+            # Optimize ONLY the Titans Memory 'Surprise'
+            # Backbone is frozen (handled in optimizer setup)
+            total_loss = mem_loss_ctx
+            
+            log_str = f"Step {step}: Memory Loss {total_loss.item():.4f}"
+            
         # Backward
-        loss.backward()
-        
+        total_loss.backward()
+
         # Step
         for opt in optimizers:
             opt.step()
-            
+        
         if step % 10 == 0:
-            print(f"Step {step}: Loss {loss.item():.4f}")
+            print(log_str)
             
         # Check Titans Memory update logic?
         # If in Stage 2, we would also run memory updates.
         # But this is the base loop.
+        if step % 100 == 0:
+             torch.save(model.state_dict(), f"model_step_{step}.pt")
 
+    print("Saving final model...")
+    torch.save(model.state_dict(), "model_final.pt")
+    print("Model saved to model_final.pt")
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, default="data/")

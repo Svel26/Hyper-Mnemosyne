@@ -8,15 +8,15 @@ env/
 venv/
 .env
 
-# Data
-data/
-*.parquet
+# Data (Ignore generated parquets)
+data/*.parquet
+!data/.keep
 
 # IDE
 .vscode/
 .idea/
 
-# Checkpoints
+# Checkpoints (Ignore trained weights)
 *.pt
 *.pth
 checkpoints/

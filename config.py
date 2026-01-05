@@ -20,5 +20,14 @@ class HyperMnemosyneConfig:
     memory_width: int = 2048
     
     # Training / Optimization
-    max_seq_len: int = 4096  # Fit within 24GB with Mamba-2
-    vocab_size: int = 32000 # Example vocab size
+    max_seq_len: int = 128  # Ultra-compact memory setting
+    
+    # JEPA
+    jepa_weight: float = 0.5  # Weight of the latent prediction loss
+    predictor_dim: int = 512 # Dimension of the latent predictor bottleneck
+    
+    # Training Stage
+    # "backbone": Train mHC + Mamba-2 + JEPA (Titans frozen/disabled)
+    # "backbone": Train mHC + Mamba-2 + JEPA (Titans frozen/disabled)
+    # "memory": Freeze backbone, Train Titans Memory
+    training_stage: str = "backbone"

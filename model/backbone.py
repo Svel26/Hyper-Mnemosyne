@@ -9,7 +9,8 @@ except ImportError:
             super().__init__()
             pass
 
-from transformers.models.llama.modeling_llama import LlamaAttention, LlamaConfig
+from transformers.models.llama.modeling_llama import LlamaAttention, LlamaConfig, LlamaRotaryEmbedding
+
 
 from .mhc import MHC
 from .titans import TitansMemoryLayer, MemoryMLP
@@ -34,8 +35,9 @@ class HybridBlock(nn.Module):
                 num_attention_heads=config.mhc_branches * 4, # Just a heuristic
                 num_key_value_heads=config.mhc_branches * 4,
                 max_position_embeddings=config.max_seq_len,
+                _attn_implementation="eager",
             )
-            self.mixer = LlamaAttention(config=llama_config)
+            self.mixer = LlamaAttention(config=llama_config, layer_idx=layer_idx)
         else:
             # Mamba-2
             self.mixer = Mamba2(
@@ -52,7 +54,7 @@ class HybridBlock(nn.Module):
             nn.Linear(config.d_model * 4, config.d_model)
         )
 
-    def forward(self, x, residual_state=None):
+    def forward(self, x, residual_state=None, position_embeddings=None, attention_mask=None):
         """
         x: [B, S, D] - current lane input (simplified view)
         residual_state: [B, S, N, D] - the manifold hyper-connection state
@@ -86,7 +88,12 @@ class HybridBlock(nn.Module):
         # 3. Core Processing (Mamba or Attention)
         if self.use_attention:
             # LlamaAttention expects specific args
-            mixer_out, _, _ = self.mixer(normalized_input)
+            mixer_out = self.mixer(
+                normalized_input,
+                attention_mask=attention_mask,
+                position_embeddings=position_embeddings
+            )[0]
+
         else:
             mixer_out = self.mixer(normalized_input)
             
@@ -126,25 +133,65 @@ class HyperMnemosyne(nn.Module):
         self.final_norm = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         
+        # Prepare config for RoPE
+        # Head dim = d_model / (mhc_branches * 4)
+        # We need to construct a LlamaConfig that results in this head_dim for RoPE
+        rope_config = LlamaConfig(
+            hidden_size=config.d_model,
+            num_attention_heads=config.mhc_branches * 4,
+            max_position_embeddings=config.max_seq_len,
+            _attn_implementation="eager",
+        )
+        self.rotary_emb = LlamaRotaryEmbedding(rope_config)
+
+        # JEPA Latent Predictor
+        # Projects from d_model -> predictor_dim -> d_model
+        # Used to predict the latent state of the 'target' view from the 'context' view
+        self.jepa_predictor = nn.Sequential(
+            nn.Linear(config.d_model, config.predictor_dim),
+            nn.GELU(),
+            nn.Linear(config.predictor_dim, config.d_model)
+        )
+
     def forward(self, input_ids):
         x = self.embeddings(input_ids)
+        B, S, D = x.shape
+        
+        # RoPE
+        position_ids = torch.arange(0, S, dtype=torch.long, device=x.device).unsqueeze(0)
+        position_embeddings = self.rotary_emb(x, position_ids)
+        
+        # Causal Mask
+        # LlamaAttention expects [Batch, 1, Seq, Seq] ?? Or [1, 1, Seq, Seq]
+        # Standard causal mask:
+        attention_mask = torch.triu(torch.ones(S, S, device=x.device) * float('-inf'), diagonal=1)
+        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0) # [1, 1, S, S]
         
         residual_state = None
         
-        # Titans Memory Interaction (Pre-Layer? or Integrated?)
-        # Titans usually acts as a "long-term context" provider.
-        # We'll pass the memory state into layers if needed, or process here.
-        # For simplicity/Blueprint, let's assume it runs in parallel or as a special layer.
-        # Let's run it as a side-car.
+        # Titans Memory Interaction
+        # In the blueprint, Titans learns at test time to minimize "Surprise".
+        # We integrate it by retrieving memory and adding it to the input stream.
+        memory_out, memory_loss = self.memory(x)
         
-        # TODO: Integrate Titans memory retrieval
+        # Add memory context to the stream
+        # (Simple addition for now, could be gated)
+        x = x + memory_out
+        
+        residual_state = None
         
         for layer in self.layers:
-            residual_state = layer(x, residual_state=residual_state)
+            residual_state = layer(
+                x,
+                residual_state=residual_state,
+                position_embeddings=position_embeddings,
+                attention_mask=attention_mask
+            )
             
         # Final aggregation
         final_out = residual_state.mean(dim=2)
         final_out = self.final_norm(final_out)
         logits = self.lm_head(final_out)
         
-        return logits
+        # If in memory stage, we might want to return memory_loss
+        return logits, final_out, memory_loss
