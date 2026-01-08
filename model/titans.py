@@ -25,60 +25,62 @@ class TitansMemoryLayer(nn.Module):
     def forward(self, x, memory_state=None):
         """
         x: [B, S, D]
-        memory_state: [B, S, D] (or [B, D] if handling recurrence differently, but here 
-                       we assume simple token-wise temporal bias or sequence-level state)
-                       
-        For a true recurrence, it should be [B, D] and updated step-by-step. 
-        But given we trained efficiently with parallelism, we likely want a "Global Context" state.
-        
-        Simplified Variant: Time-Mixing is handled by Mamba. 
-        Titans Memory here acts as a "Long-Term Buffer".
-        We will treat memory_state as a running average of the sequence.
+        memory_state: [B, S, D]
         """
         # --- TRAINING MODE (Parallel-ish via Loop needed for correct time-mixing) ---
         if memory_state is None:
             B, S, D = x.shape
-            # Initialize hidden state (t=-1)
-            h = torch.zeros(B, D, device=x.device, dtype=x.dtype)
             
-            states = []
-            # Sequential Scan (loop over time)
-            # h_t = decay * h_{t-1} + (1-decay) * x_t
-            for t in range(S):
-                h = self.decay * h + (1 - self.decay) * x[:, t, :]
-                states.append(h)
-                
-            # Stack to get [B, S, D]
-            new_memory_state = torch.stack(states, dim=1)
+            # Use JIT-friendly helper for the loop to compute h_{t-1} for all t
+            new_memory_state = self._scan(x, self.decay)
+            
+            # Predict x_t using h_{t-1}
+            mem_out = self.memory_mlp(new_memory_state)
+            
+            # Surprise Loss (Reconstruction)
+            surprise_loss = F.mse_loss(mem_out, x.detach())
+            
+            return mem_out, surprise_loss, None # Don't need state return for training
             
         # --- INFERENCE MODE (Step-by-Step) ---
         else:
-             # memory_state passed in is [B, D] from previous step
-             # But wait, in inference loop we pass 'titans_state' which is likely the LAST state.
-             # However, backbone.py passes 'titans_state' which we return as new_memory_state.
-             # Let's assume memory_state here is [B, D] (the "h" from previous step).
+             # memory_state passed in is [B, D] from previous step (h_{t-1})
+             # We use h_{t-1} to predict x_t.
+             # So we use memory_state AS IS for the MLP input.
              
-             # But if input is [B, 1, D], we do one update.
-             # new_state = decay * old + (1-decay) * x
+             # Current input for MLP: memory_state (which is h_{t-1})
+             state_for_mlp = memory_state.unsqueeze(1)
+             
+             # Update State: h_t = decay * h_{t-1} + (1-decay) * x_t
              new_memory_state = self.decay * memory_state + (1 - self.decay) * x.squeeze(1)
              
-             # Restore dimension for output [B, 1, D]
+             # Prepare for return (restore dimensions)
              new_memory_state = new_memory_state.unsqueeze(1)
-        
-        # Forward pass through the memory MLP using the STATE, not the raw input
-        mem_out = self.memory_mlp(new_memory_state)
-        
-        # Surprise Loss (Reconstruction)
-        # The memory should predict the current input from its state
-        surprise_loss = F.mse_loss(mem_out, x.detach())
-        
-        if memory_state is not None:
-             # Return state as [B, D] for next inference step
-             return_state = new_memory_state.squeeze(1)
-        else:
-             # Return full sequence [B, S, D] (though backbone might not use it, useful for debug)
-             # Actually backbone expects 'new_titans_state' to be passed back in inference loop.
-             # If we are in training, we don't care about return state.
-             return_state = new_memory_state
              
-        return mem_out, surprise_loss, return_state
+             # MLP Input is PRE-UPDATE state
+             mem_out = self.memory_mlp(state_for_mlp)
+             
+             # Surprise Loss
+             surprise_loss = F.mse_loss(mem_out, x.detach())
+             
+             return mem_out, surprise_loss, new_memory_state.squeeze(1)
+
+    @torch.jit.export
+    def _scan(self, x: torch.Tensor, decay: float) -> torch.Tensor:
+        B, S, D = x.shape
+        h = torch.zeros(B, D, device=x.device, dtype=x.dtype)
+        states = []
+        
+        # Sequential Scan
+        for t in range(S):
+            # 1. READ (Store previous state h_{t-1})
+            # For t=0, h is 0. Correct.
+            states.append(h)
+            
+            # 2. WRITE (Update to h_t)
+            # h_t = decay * h_{t-1} + (1-decay) * x_t
+            # Note: x[:, t, :] is [B, D]
+            h = decay * h + (1 - decay) * x[:, t, :]
+            
+        # Stack -> [B, S, D]
+        return torch.stack(states, dim=1)
