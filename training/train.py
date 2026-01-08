@@ -150,10 +150,10 @@ def train(args):
         # JEPA Hybrid Training Step
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
             # 1. Forward pass on Context
-            logits_ctx, hidden_ctx, mem_loss_ctx = model(input_ids)
+            logits_ctx, hidden_ctx, mem_loss_ctx, _ = model(input_ids)
             
             # 2. Forward pass on Target
-            logits_tgt, hidden_tgt, _ = model(target_ids)
+            logits_tgt, hidden_tgt, _, _ = model(target_ids)
             
             total_loss = 0
             
