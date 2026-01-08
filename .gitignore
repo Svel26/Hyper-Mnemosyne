@@ -8,9 +8,13 @@ env/
 venv/
 .env
 
-# Data (Ignore generated parquets)
-data/*.parquet
+# Data
+data/
 !data/.keep
+data/fineweb/
+data/fineweb_prod/
+data/fineweb_large/
+*.parquet
 
 # IDE
 .vscode/

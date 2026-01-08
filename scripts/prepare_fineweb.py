@@ -121,6 +121,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data/")
     parser.add_argument("--num_samples", type=int, default=20000)
     parser.add_argument("--seq_len", type=int, default=4096)
+    parser.add_argument("--chunk_size", type=int, default=10000)
     args = parser.parse_args()
     
-    prepare_fineweb(args.output_dir, num_samples=args.num_samples, seq_len=args.seq_len)
+    prepare_fineweb(args.output_dir, num_samples=args.num_samples, seq_len=args.seq_len, chunk_size=args.chunk_size)
