@@ -1,3 +1,6 @@
+![image](header.jpg)
+
+
 # Hyper-Mnemosyne 🧠
 
 **Hyper-Mnemosyne** is a hybrid 3B parameter Language Model designed to run and train efficiently on consumer hardware (e.g., NVIDIA RTX 3090/4090, 24GB VRAM).
