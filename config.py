@@ -29,6 +29,5 @@ class HyperMnemosyneConfig:
     
     # Training Stage
     # "backbone": Train mHC + Mamba-2 + JEPA (Titans frozen/disabled)
-    # "backbone": Train mHC + Mamba-2 + JEPA (Titans frozen/disabled)
     # "memory": Freeze backbone, Train Titans Memory
-    training_stage: str = "memory"
+    training_stage: str = "backbone"
