@@ -37,9 +37,14 @@ class TitansMemoryLayer(nn.Module):
             diff = indices[:, None] - indices[None, :]
             mask = diff >= 0
             
+            # Safe Power Calculation: Avoid decaying by negative power (explodes)
+            # 0.9^(-k) -> huge. Even if masked later, Inf * 0 is NaN.
+            safe_diff = diff.clone()
+            safe_diff[~mask] = 0 # Dummy value
+            
             # Decay Matrix: [S, S]
-            decay_matrix = (self.decay ** diff.float()) * mask
-            decay_matrix = decay_matrix * (1.0 - self.decay)
+            decay_matrix = (self.decay ** safe_diff.float())
+            decay_matrix = decay_matrix * mask.float() * (1.0 - self.decay)
             
             # Apply: H = Matrix @ X
             # [S, S] @ [B, S, D] -> [B, S, D]
