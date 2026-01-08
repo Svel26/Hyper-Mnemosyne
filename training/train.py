@@ -74,11 +74,39 @@ def train(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     
-    # Load Pretrained Weights
+    # Auto-Resume Logic
+    import glob
+    import os
+    import re
+    
+    start_step = 0
+    checkpoints = glob.glob("model_step_*.pt")
+    
+    # Priority 1: Explicit Pretrained Path (e.g. for Stage 2)
     if args.pretrained_path:
         print(f"Loading pretrained backbone from {args.pretrained_path}...")
         state_dict = torch.load(args.pretrained_path, map_location=device)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict, strict=False) # strict=False for flexibility
+        
+    # Priority 2: Auto-Resume from latest checkpoint (Higher priority if exists and matches stage)
+    elif checkpoints:
+        # Extract steps
+        steps = []
+        for ckpt in checkpoints:
+            match = re.search(r"model_step_(\d+).pt", ckpt)
+            if match:
+                steps.append(int(match.group(1)))
+        
+        if steps:
+            max_step = max(steps)
+            latest_ckpt = f"model_step_{max_step}.pt"
+            print(f"Resuming from latest checkpoint: {latest_ckpt} (Step {max_step})")
+            
+            state_dict = torch.load(latest_ckpt, map_location=device)
+            model.load_state_dict(state_dict, strict=False)
+            start_step = max_step
+        
+
         
     # Freezing Logic for Stage 2
     if config.training_stage == "memory":
@@ -135,7 +163,7 @@ def train(args):
     
     use_amp = torch.cuda.is_available()
     
-    for step, (input_ids, target_ids) in enumerate(dataloader):
+    for step, (input_ids, target_ids) in enumerate(dataloader, start=start_step):
         if step > args.max_steps:
             break
             

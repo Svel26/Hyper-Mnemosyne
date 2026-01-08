@@ -2,10 +2,11 @@ from dataclasses import dataclass
 
 @dataclass
 class HyperMnemosyneConfig:
-    # Model Dimensions
-    d_model: int = 768
-    n_layers: int = 12
-    vocab_size: int = 50257  # Standard GPT-2/Llama tokenizer size approximation, adjust as needed
+    # Model Dimensions (Scaled for RTX 3090 / 24GB VRAM)
+    # Target: ~350M parameters
+    d_model: int = 1024
+    n_layers: int = 24
+    vocab_size: int = 50257
     
     # Manifold-Constrained Hyper-Connections
     mhc_branches: int = 4
@@ -17,7 +18,7 @@ class HyperMnemosyneConfig:
     
     # Titans Memory
     memory_depth: int = 2
-    memory_width: int = 2048
+    memory_width: int = 4096 # Wide memory for production
     
     # Training / Optimization
     max_seq_len: int = 4096  # Blueprint requirement

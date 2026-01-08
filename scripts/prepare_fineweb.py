@@ -1,127 +1,120 @@
 import os
 import argparse
-import pandas as pd
-import torch
 import random
-import numpy as np
 from datasets import load_dataset
 from transformers import GPT2TokenizerFast
-from tqdm import tqdm
+import multiprocessing
 
-def apply_jepa_masking(tokens, tokenizer, mask_prob=0.15, span_prob=0.1):
+def jepa_masking_fn(batch):
     """
-    Apply noise for the Context view.
-    1. Random Token Masking (replace with <mask> or random token)
-    2. Span Deletion (drop a chunk of text)
+    Batched processing function for dataset.map
     """
-    tokens = list(tokens) # Copy
-    length = len(tokens)
+    # Tokenizer is not pickleable directly in map if passed as partial often, 
+    # but here we initialize it inside or use global if fork.
+    # Better: initialize inside to be safe with 'spawn' context.
+    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+    tokenizer.pad_token = tokenizer.eos_token
+    # Silence warnings about >1024 length (we handle 4k+ manually)
+    tokenizer.model_max_length = 100000
     
-    # 1. Span Deletion (Simulate missing information)
-    if random.random() < span_prob:
-        span_len = random.randint(10, length // 4)
-        start = random.randint(0, length - span_len)
-        # We just remove them for the context view, making it shorter/broken
-        # Or better: replace with a single sentinel if we had one.
-        # For this architecture (Mamba), just removing them forces it to predict the 'jump'.
-        del tokens[start:start+span_len]
+    seq_len = 4096 # Hardcoded for this map function or passed via fn_kwargs
+    outputs = {"context_ids": [], "target_ids": []}
+    
+    for text in batch['text']:
+        if len(text) < 500: continue
         
-    # 2. Random Token Masking
-    # Since we don't have a special Mask token in GPT2 usually, we can replace with 
-    # a random token or a specific specialized token if we added one.
-    # Let's replace with the EOS token as a proxy for "unknown/noise" or random tokens.
-    vocab_size = len(tokenizer)
-    for i in range(len(tokens)):
-        if random.random() < mask_prob:
-            rand = random.random()
-            if rand < 0.8:
-                # Replace with something random
-                tokens[i] = random.randint(0, vocab_size-1)
-            elif rand < 0.9:
-                # Replace with generic "UNK" proxy (EOS)
-                tokens[i] = tokenizer.eos_token_id
-            # else: keep original (10%)
+        tokens = tokenizer.encode(text)
+        
+        # Sliding window with stride? Or just non-overlapping chunks?
+        stride = seq_len
+        for i in range(0, len(tokens) - seq_len + 1, stride):
+            clean_seq = tokens[i : i + seq_len]
+            if len(clean_seq) < seq_len: continue
             
-    return tokens
+            # Apply Masking
+            noisy_seq = list(clean_seq)
+            
+            # 1. Span Deletion (10% chance)
+            if random.random() < 0.1:
+                span_len = random.randint(10, seq_len // 4)
+                start = random.randint(0, seq_len - span_len)
+                del noisy_seq[start:start+span_len]
+                
+            # 2. Token Masking (15% prob)
+            # Vectorized-like loop
+            for j in range(len(noisy_seq)):
+                if random.random() < 0.15:
+                    r = random.random()
+                    if r < 0.8:
+                        noisy_seq[j] = random.randint(0, len(tokenizer)-1)
+                    elif r < 0.9:
+                        noisy_seq[j] = tokenizer.eos_token_id
+                        
+            # Pad back to seq_len
+            if len(noisy_seq) < seq_len:
+                noisy_seq += [tokenizer.eos_token_id] * (seq_len - len(noisy_seq))
+            else:
+                noisy_seq = noisy_seq[:seq_len]
+                
+            outputs["context_ids"].append(noisy_seq)
+            outputs["target_ids"].append(clean_seq)
+            
+    return outputs
 
-def prepare_fineweb(output_dir, seq_len=1024, num_samples=100_000, chunk_size=10_000):
+def prepare_fineweb(output_dir, num_samples=100_000, seq_len=4096, num_proc=8):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    print("Streaming FineWeb-Edu dataset (sample)...")
-    dataset = load_dataset("HuggingFaceFW/fineweb-edu", split="train", streaming=True)
+    print(f"Loading FineWeb-Edu (sample-10BT) with {num_proc} workers...")
+    # Load FULL dataset (not streaming) to enable highly efficient map
+    # It will download parquet files (~10GB)
+    dataset = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train")
     
-    print("Initializing Tokenizer (GPT2)...")
-    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
-    tokenizer.pad_token = tokenizer.eos_token
+    # Select subset if needed (but 10BT is ~10M samples)
+    # If user wants 1M samples, we can take first 1M *documents*?
+    # No, num_samples usually refers to *sequences*.
+    # Let's take a slice of documents that likely yields enough sequences.
+    # 10BT tokens / 4096 ~ 2.5M sequences.
+    # So we probably need ~40% of the dataset for 1M sequences.
+    # Let's just process the whole "sample-10BT" and shuffle/select later or save all.
+    # The user asked for "1M samples" (sequences).
     
-    data = []
-    total_generated = 0
-    file_idx = 0
+    print("dataset loaded. applying map...")
     
-    iterator = iter(dataset)
+    # Process
+    processed = dataset.map(
+        jepa_masking_fn,
+        batched=True,
+        batch_size=1000,
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+        desc="Tokenizing & Masking"
+    )
     
-    print(f"Processing {num_samples} samples with JEPA masking...")
+    print(f"Generated {len(processed)} sequences.")
     
-    with tqdm(total=num_samples) as pbar:
-        while total_generated < num_samples:
-            try:
-                sample = next(iterator)
-                text = sample['text']
-            except StopIteration:
-                break
-                
-            if len(text) < 500: 
-                continue
-                
-            tokens = tokenizer.encode(text)
-            
-            for i in range(0, len(tokens) - seq_len, seq_len):
-                clean_seq = tokens[i : i + seq_len]
-                if len(clean_seq) < seq_len:
-                    continue
-                    
-                noisy_seq = apply_jepa_masking(clean_seq, tokenizer)
-                
-                if len(noisy_seq) < seq_len:
-                    noisy_seq += [tokenizer.eos_token_id] * (seq_len - len(noisy_seq))
-                else:
-                    noisy_seq = noisy_seq[:seq_len]
-                
-                data.append({
-                    "context_ids": noisy_seq,
-                    "target_ids": clean_seq
-                })
-                total_generated += 1
-                pbar.update(1)
-                
-                if len(data) >= chunk_size:
-                    # Save chunk
-                    df = pd.DataFrame(data)
-                    output_file = os.path.join(output_dir, f"train_data_{file_idx}.parquet")
-                    df.to_parquet(output_file)
-                    print(f"Saved {output_file}")
-                    data = [] # Clear memory
-                    file_idx += 1
-                
-                if total_generated >= num_samples:
-                    break
-            
-    # Save remaining
-    if data:
-        df = pd.DataFrame(data)
-        output_file = os.path.join(output_dir, f"train_data_{file_idx}.parquet")
-        df.to_parquet(output_file)
+    # Save to disk
+    print("Saving to parquet chunks...")
+    # Shard it
+    # 1M rows per file roughly?
+    shard_size = 100_000
+    num_shards = (len(processed) // shard_size) + 1
+    
+    for i in range(num_shards):
+        shard = processed.shard(num_shards=num_shards, index=i)
+        output_file = os.path.join(output_dir, f"train_data_{i}.parquet")
+        shard.to_parquet(output_file)
         print(f"Saved {output_file}")
-        
-    print(f"Total generated: {total_generated}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="data/")
-    parser.add_argument("--num_samples", type=int, default=20000)
+    parser.add_argument("--num_samples", type=int, default=1000000) # Ignored, we consume full 10BT sample
     parser.add_argument("--seq_len", type=int, default=4096)
-    parser.add_argument("--chunk_size", type=int, default=10000)
+    parser.add_argument("--batch_size", type=int, default=1000) # For map
     args = parser.parse_args()
     
-    prepare_fineweb(args.output_dir, num_samples=args.num_samples, seq_len=args.seq_len, chunk_size=args.chunk_size)
+    # Get CPU count
+    n_proc = os.cpu_count() or 4
+    
+    prepare_fineweb(args.output_dir, num_samples=args.num_samples, seq_len=args.seq_len, num_proc=n_proc)
