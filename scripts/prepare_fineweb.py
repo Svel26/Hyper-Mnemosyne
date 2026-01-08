@@ -61,60 +61,53 @@ def jepa_masking_fn(batch):
             
     return outputs
 
-def prepare_fineweb(output_dir, num_samples=100_000, seq_len=4096, num_proc=8):
+def prepare_fineweb(output_dir, num_samples=100_000, seq_len=4096, num_proc=4):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
     print(f"Loading FineWeb-Edu (sample-10BT) with {num_proc} workers...")
-    # Load FULL dataset (not streaming) to enable highly efficient map
-    # It will download parquet files (~10GB)
     dataset = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train")
     
-    # Select subset if needed (but 10BT is ~10M samples)
-    # If user wants 1M samples, we can take first 1M *documents*?
-    # No, num_samples usually refers to *sequences*.
-    # Let's take a slice of documents that likely yields enough sequences.
-    # 10BT tokens / 4096 ~ 2.5M sequences.
-    # So we probably need ~40% of the dataset for 1M sequences.
-    # Let's just process the whole "sample-10BT" and shuffle/select later or save all.
-    # The user asked for "1M samples" (sequences).
+    # SHARDING STRATEGY
+    # 10BT tokens ~ 2.5M sequences of 4k.
+    # To improve UX, we split the dataset into N shards and process/save them sequentially.
+    # This ensures files appear in `data/` incrementally.
     
-    print("dataset loaded. applying map...")
+    num_shards = 50 # 50 files
+    print(f"Dataset Loaded. Splitting into {num_shards} shards for incremental processing...")
     
-    # Process
-    processed = dataset.map(
-        jepa_masking_fn,
-        batched=True,
-        batch_size=1000,
-        num_proc=num_proc,
-        remove_columns=dataset.column_names,
-        desc="Tokenizing & Masking"
-    )
-    
-    print(f"Generated {len(processed)} sequences.")
-    
-    # Save to disk
-    print("Saving to parquet chunks...")
-    # Shard it
-    # 1M rows per file roughly?
-    shard_size = 100_000
-    num_shards = (len(processed) // shard_size) + 1
-    
-    for i in range(num_shards):
-        shard = processed.shard(num_shards=num_shards, index=i)
-        output_file = os.path.join(output_dir, f"train_data_{i}.parquet")
-        shard.to_parquet(output_file)
-        print(f"Saved {output_file}")
+    for shard_idx in range(num_shards):
+        print(f"--- Processing Shard {shard_idx+1}/{num_shards} ---")
+        shard = dataset.shard(num_shards=num_shards, index=shard_idx)
+        
+        # Map just this shard
+        processed_shard = shard.map(
+            jepa_masking_fn,
+            batched=True,
+            batch_size=args.batch_size,
+            num_proc=num_proc, 
+            remove_columns=dataset.column_names,
+            desc=f"Shard {shard_idx}"
+        )
+        
+        if len(processed_shard) > 0:
+            output_file = os.path.join(output_dir, f"train_data_{shard_idx}.parquet")
+            processed_shard.to_parquet(output_file)
+            print(f"Saved {output_file} ({len(processed_shard)} sequences)")
+        
+        # Clear memory explicitly (though python usually handles it)
+        del processed_shard
+        del shard
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="data/")
-    parser.add_argument("--num_samples", type=int, default=1000000) # Ignored, we consume full 10BT sample
+    parser.add_argument("--num_samples", type=int, default=1000000) 
     parser.add_argument("--seq_len", type=int, default=4096)
-    parser.add_argument("--batch_size", type=int, default=1000) # For map
+    parser.add_argument("--batch_size", type=int, default=200) 
     args = parser.parse_args()
     
-    # Get CPU count
-    n_proc = os.cpu_count() or 4
+    cpu_count = os.cpu_count() or 4
+    n_proc = 6 if cpu_count >= 6 else cpu_count
     
     prepare_fineweb(args.output_dir, num_samples=args.num_samples, seq_len=args.seq_len, num_proc=n_proc)
