@@ -17,70 +17,65 @@ class TitansMemoryLayer(nn.Module):
         super().__init__()
         self.config = config
         self.memory_mlp = MemoryMLP(config)
-        
-        # Learnable or fixed decay? Let's use a fixed decay for stability first, or learnable sigmoid.
-        # Simplified: Fixed decay 0.9
         self.decay = 0.9
 
     def forward(self, x, memory_state=None):
         """
         x: [B, S, D]
-        memory_state: [B, S, D]
+        memory_state: [B, D] (Previous step state for inference)
         """
-        # --- TRAINING MODE (Parallel-ish via Loop needed for correct time-mixing) ---
+        B, S, D = x.shape
+        
+        # --- PARALLEL MODE (Training / Prefill) ---
         if memory_state is None:
-            B, S, D = x.shape
+            # 1. Fast Parallel Decay (Vectorized)
+            # Compute weights for cumulative sum: [decay^0, decay^1, ..., decay^S]
+            # We want h_t = (1-decay) * sum_{i=0}^{t} decay^(t-i) * x_i
             
-            # Use JIT-friendly helper for the loop to compute h_{t-1} for all t
-            new_memory_state = self._scan(x, self.decay)
+            indices = torch.arange(S, device=x.device)
+            # diff[t, i] = t - i
+            diff = indices[:, None] - indices[None, :]
+            mask = diff >= 0
             
-            # Predict x_t using h_{t-1}
-            mem_out = self.memory_mlp(new_memory_state)
+            # Decay Matrix: [S, S]
+            decay_matrix = (self.decay ** diff.float()) * mask
+            decay_matrix = decay_matrix * (1.0 - self.decay)
             
-            # Surprise Loss (Reconstruction)
+            # Apply: H = Matrix @ X
+            # [S, S] @ [B, S, D] -> [B, S, D]
+            # Cast to x dtype
+            decay_matrix = decay_matrix.to(dtype=x.dtype)
+            current_states = torch.einsum('ts, bsd -> btd', decay_matrix, x)
+            
+            # 2. Shift for "Read-Before-Write"
+            # We need h_{t-1} to predict x_t.
+            previous_states = torch.roll(current_states, shifts=1, dims=1)
+            previous_states[:, 0, :] = 0.0 # t=0 has no history
+            
+            # 3. Output
+            mem_out = self.memory_mlp(previous_states)
+            
+            # 4. FIX: Return the FINAL state for Prefill->Decode handoff
+            # The state at the end of the block is the last element of current_states
+            final_state = current_states[:, -1, :]
+            
             surprise_loss = F.mse_loss(mem_out, x.detach())
             
-            return mem_out, surprise_loss, None # Don't need state return for training
+            return mem_out, surprise_loss, final_state
             
-        # --- INFERENCE MODE (Step-by-Step) ---
+        # --- STEP MODE (Inference Decoding) ---
         else:
-             # memory_state passed in is [B, D] from previous step (h_{t-1})
-             # We use h_{t-1} to predict x_t.
-             # So we use memory_state AS IS for the MLP input.
-             
-             # Current input for MLP: memory_state (which is h_{t-1})
-             state_for_mlp = memory_state.unsqueeze(1)
-             
-             # Update State: h_t = decay * h_{t-1} + (1-decay) * x_t
-             new_memory_state = self.decay * memory_state + (1 - self.decay) * x.squeeze(1)
-             
-             # Prepare for return (restore dimensions)
-             new_memory_state = new_memory_state.unsqueeze(1)
-             
-             # MLP Input is PRE-UPDATE state
-             mem_out = self.memory_mlp(state_for_mlp)
-             
-             # Surprise Loss
-             surprise_loss = F.mse_loss(mem_out, x.detach())
-             
-             return mem_out, surprise_loss, new_memory_state.squeeze(1)
-
-    @torch.jit.export
-    def _scan(self, x: torch.Tensor, decay: float) -> torch.Tensor:
-        B, S, D = x.shape
-        h = torch.zeros(B, D, device=x.device, dtype=x.dtype)
-        states = []
-        
-        # Sequential Scan
-        for t in range(S):
-            # 1. READ (Store previous state h_{t-1})
-            # For t=0, h is 0. Correct.
-            states.append(h)
+            # memory_state is h_{t-1} [B, D]
             
-            # 2. WRITE (Update to h_t)
-            # h_t = decay * h_{t-1} + (1-decay) * x_t
-            # Note: x[:, t, :] is [B, D]
-            h = decay * h + (1 - decay) * x[:, t, :]
+            # 1. Read (Predict current x using old state)
+            state_for_mlp = memory_state.unsqueeze(1) # [B, 1, D]
+            mem_out = self.memory_mlp(state_for_mlp)
             
-        # Stack -> [B, S, D]
-        return torch.stack(states, dim=1)
+            # 2. Write (Update state with current x)
+            # x is [B, 1, D]
+            update_x = x.squeeze(1)
+            new_memory_state = self.decay * memory_state + (1.0 - self.decay) * update_x
+            
+            surprise_loss = F.mse_loss(mem_out, x.detach())
+            
+            return mem_out, surprise_loss, new_memory_state

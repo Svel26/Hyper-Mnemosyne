@@ -24,7 +24,7 @@ def test_titans_forward_pass():
     # Check shapes
     assert mem_out.shape == (B, S, D), f"Expected shape {(B, S, D)}, got {mem_out.shape}"
     assert surprise_loss.ndim == 0, "Surprise loss should be scalar mean"
-    assert state is None, "Training mode should not return state sequence (optimization)"
+    assert state.shape == (B, D), "Training mode should return final state [B, D]"
     
     # Check value consistency (simple pass)
     # MLP is w2(act(w1(x)))
@@ -50,36 +50,33 @@ def test_titans_time_mixing():
     x = torch.zeros(B, S, D)
     x[0, 0, 0] = 1.0
     
-    # To verify internal state mixing, we can't look at returned state (it's None).
-    # We must trust the _scan method or check mem_out.
-    # OR, we can access the protected method for this test.
+    # To verify internal state mixing, we check mem_out or the final returned state.
+    # The Parallel Matrix implementation returns final state (h_T).
+    # But h_T is result of processing x_{0..T}.
+    # However, 'mem_out' is predictions based on h_{t-1}.
     
-    states = memory._scan(x, memory.decay)
+    # Let's check mem_out predictions.
+    # t=0: READ h_{-1}=0. mem_out[0] predicts from 0.
+    # t=1: READ h_0 = d*0 + (1-d)*1 = 0.5. mem_out[1] predicts from 0.5.
+    # t=2: READ h_1 = d*0.5 + 0 = 0.25. mem_out[2] predicts from 0.25.
+    # t=3: READ h_2 = 0.125. mem_out[3] predicts from 0.125.
     
-    # Expected State Evolution (Logic Updated for Read-Before-Write):
-    # t=0: READ h_{-1}=0. PREDICT based on 0. WRITE h_0 = d*0 + (1-d)*1 = 0.5.
-    # t=1: READ h_0=0.5. PREDICT based on 0.5. WRITE h_1 = d*0.5 + 0 = 0.25.
-    # t=2: READ h_1=0.25. PREDICT based on 0.25. WRITE h_2 = 0.125.
-    # t=3: READ h_2=0.125. PREDICT based on 0.125. WRITE h_3 = 0.0625.
+    # The final returned state 'state' is h_3 = 0.0625.
     
-    # The 'states' tensor returned by _scan contains [h_{-1}, h_0, h_1, h_2]
-    # states[0] = 0
-    # states[1] = 0.5
-    # states[2] = 0.25
-    # states[3] = 0.125
+    mem_out, _, final_state = memory(x)
     
-    val_t3 = states[0, 3, 0].item() # Should be 0.125
-    print(f"State used for prediction at t=3 (h_2): {val_t3}")
+    final_val = final_state[0, 0].item()
+    print(f"Final State Value (h_3): {final_val}")
     
-    assert val_t3 > 0.0, "State should decay over time, not disappear!"
-    assert abs(val_t3 - 0.125) < 1e-4, f"Expected 0.125, got {val_t3}"
+    assert final_val > 0.0, "State should decay over time, not disappear!"
+    assert abs(final_val - 0.0625) < 1e-4, f"Expected 0.0625, got {final_val}"
 
 def test_titans_gradients():
     config = MockConfig()
     memory = TitansMemoryLayer(config)
     
     x = torch.randn(2, 5, 128, requires_grad=True)
-    mem_out, loss, _ = memory(x)
+    mem_out, loss, _ = memory(x) # State is returned but ignored here
     
     loss.backward()
     
