@@ -21,7 +21,14 @@ def generate(args):
     print(f"Loading weights from {args.model_path}...")
     try:
         state_dict = torch.load(args.model_path, map_location=device)
-        model.load_state_dict(state_dict)
+        
+        # Handle torch.compile prefix
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            new_k = k.replace("_orig_mod.", "")
+            new_state_dict[new_k] = v
+            
+        model.load_state_dict(new_state_dict)
     except FileNotFoundError:
         print(f"Error: Could not find {args.model_path}. Did you run training?")
         return
@@ -52,8 +59,15 @@ def generate(args):
             # Get last token logits
             next_token_logits = logits[:, -1, :]
             
-            # Greedy
-            next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            # Apply Temperature (Higher = crazier, Lower = safer)
+            next_token_logits = next_token_logits / 0.8 
+            
+            # Top-K Sampling
+            top_k = 50
+            v, i = torch.topk(next_token_logits, top_k)
+            probs = torch.nn.functional.softmax(v, dim=-1)
+            next_token_idx = torch.multinomial(probs, 1)
+            next_token = i.gather(-1, next_token_idx)
             
             generated = torch.cat([generated, next_token], dim=1)
             
