@@ -1,12 +1,19 @@
 import torch
 import torch.nn as nn
-from mamba_ssm import Mamba2
+try:
+    from mamba_ssm.modules.mamba2 import Mamba2
+except ImportError:
+    try:
+        from mamba_ssm import Mamba2
+    except ImportError:
+         print("Warning: Mamba2 not found, using placeholder or crashing.")
+         raise
 
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaConfig, LlamaRotaryEmbedding
 
 
 from .mhc import MHC
-from .titans import TitansMemoryLayer, MemoryMLP
+from .titans import TitansMemoryLayer
 
 class HybridBlock(nn.Module):
     def __init__(self, config, layer_idx, use_attention=False):
@@ -20,9 +27,10 @@ class HybridBlock(nn.Module):
         # mHC Mixer for the residual stream
         self.mhc = MHC(d_model=config.d_model, n_branches=config.mhc_branches)
         
+        self.mixer_needs_pos_emb = False
+        
         if use_attention:
             # Using Llama Attention as a robust baseline
-            # Need to map config
             llama_config = LlamaConfig(
                 hidden_size=config.d_model,
                 num_attention_heads=config.mhc_branches * 4, # Just a heuristic
@@ -31,6 +39,13 @@ class HybridBlock(nn.Module):
                 _attn_implementation="eager",
             )
             self.mixer = LlamaAttention(config=llama_config, layer_idx=layer_idx)
+            
+            # Robustness: Check signature to support different Transformers versions
+            import inspect
+            sig = inspect.signature(self.mixer.forward)
+            if "position_embeddings" in sig.parameters:
+                self.mixer_needs_pos_emb = True
+                
         else:
             # Mamba-2
             self.mixer = Mamba2(
@@ -47,58 +62,48 @@ class HybridBlock(nn.Module):
             nn.Linear(config.d_model * 4, config.d_model)
         )
 
-    def forward(self, x, residual_state=None, position_embeddings=None, attention_mask=None):
+    def forward(self, x, residual_state=None, position_ids=None, attention_mask=None, past_key_values=None, position_embeddings=None):
         """
-        x: [B, S, D] - current lane input (simplified view)
-        residual_state: [B, S, N, D] - the manifold hyper-connection state
+        x: [B, S, D]
+        residual_state: [B, S, N, D]
         """
-        # Note: Implement mHC logic.
-        # DeepSeek mHC paper: The layer reads a weighted sum of branches,
-        # processes it, and writes back.
-        
-        # 1. Mix residuals
-        # We assume 'x' here is the aggregated input from the previous step?
-        # Actually, in mHC, the residual state IS the main carrier.
-        
+        # 1. Initialize mHC state if None (Entry to the Multi-Lane Highway)
         if residual_state is None:
-            # Initialize if first layer
             B, S, _ = x.shape
-            residual_state = x.unsqueeze(2).repeat(1, 1, self.config.mhc_branches, 1)
+            # Fix Symmetry Collapse: Initialize with random noise or projection
+            noise = torch.randn(B, S, self.config.mhc_branches, self.config.d_model, device=x.device, dtype=x.dtype) * 0.02
+            residual_state = x.unsqueeze(2) + noise
         
-        # Apply mHC mixing
+        # 2. mHC Mixing
         # mixed_state: [B, S, N, D]
         mixed_state = self.mhc(residual_state)
         
-        # 2. Aggregation for this layer's input
-        # We sum the branches to get the input for the mixer?
-        # Or does the mixer process each branch indep?
-        # Blueprint says: "Aggregation -> CoreInput -> Dual Path"
-        
+        # 3. Aggregation
         layer_input = mixed_state.mean(dim=2) # [B, S, D]
-        
         normalized_input = self.norm(layer_input)
         
-        # 3. Core Processing (Mamba or Attention)
+        # 4. Core Processing
         if self.use_attention:
-            # LlamaAttention expects specific args
-            mixer_out = self.mixer(
-                normalized_input,
-                attention_mask=attention_mask,
-                position_embeddings=position_embeddings
-            )[0]
-
+            # LlamaAttention Compatibility Layer
+            # Dynamically pass position_embeddings only if signature requires it
+            kwargs = {
+                "hidden_states": normalized_input,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "past_key_values": past_key_values
+            }
+            if self.mixer_needs_pos_emb:
+                 kwargs["position_embeddings"] = position_embeddings
+            
+            mixer_out = self.mixer(**kwargs)[0]
         else:
             mixer_out = self.mixer(normalized_input)
             
-        # 4. FFN
+        # 5. FFN
         ffn_out = self.ffn(self.ffn_norm(mixer_out + layer_input))
         
-        # 5. Distribute back to branches?
-        # In mHC, we add F(x) to the branches.
-        # We broadcast the output to all branches (or learn a distribution, but broadcating is standard mHC)
-        
+        # 6. Distribute back to branches
         delta = ffn_out.unsqueeze(2) # [B, S, 1, D]
-        
         new_residual_state = mixed_state + delta
         
         return new_residual_state
@@ -111,24 +116,21 @@ class HyperMnemosyne(nn.Module):
         
         self.embeddings = nn.Embedding(config.vocab_size, config.d_model)
         
-        # Titans Memory Module (Global or per layer? Blueprint implies single memory store?)
-        # "Titans ues a separate MLP that learns at test time."
-        # Usually it's a module that interacts with the attention mechanism.
-        # We'll instantiate it here.
+        # Titans Memory (Simplified)
         self.memory = TitansMemoryLayer(config)
         
         self.layers = nn.ModuleList()
+        # Ensure gradients flow for checkpointing check
+        self.dummy_param = nn.Parameter(torch.empty(0))
+
         for i in range(config.n_layers):
-            # Hybrid: Every 6th layer is Attention
             is_attn = (i % 6 == 0) and (i > 0)
             self.layers.append(HybridBlock(config, i, use_attention=is_attn))
             
         self.final_norm = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         
-        # Prepare config for RoPE
-        # Head dim = d_model / (mhc_branches * 4)
-        # We need to construct a LlamaConfig that results in this head_dim for RoPE
+        # RoPE Setup
         rope_config = LlamaConfig(
             hidden_size=config.d_model,
             num_attention_heads=config.mhc_branches * 4,
@@ -138,8 +140,6 @@ class HyperMnemosyne(nn.Module):
         self.rotary_emb = LlamaRotaryEmbedding(rope_config)
 
         # JEPA Latent Predictor
-        # Projects from d_model -> predictor_dim -> d_model
-        # Used to predict the latent state of the 'target' view from the 'context' view
         self.jepa_predictor = nn.Sequential(
             nn.Linear(config.d_model, config.predictor_dim),
             nn.GELU(),
@@ -150,66 +150,57 @@ class HyperMnemosyne(nn.Module):
         x = self.embeddings(input_ids)
         B, S, D = x.shape
         
-        # RoPE
+        # Create Position IDs for RoPE
         position_ids = torch.arange(0, S, dtype=torch.long, device=x.device).unsqueeze(0)
+        
+        # RoPE Embedding
+        # Required for this version of LlamaAttention
         position_embeddings = self.rotary_emb(x, position_ids)
         
         # Causal Mask
-        # LlamaAttention expects [Batch, 1, Seq, Seq] ?? Or [1, 1, Seq, Seq]
-        # Standard causal mask:
         attention_mask = torch.triu(torch.ones(S, S, device=x.device) * float('-inf'), diagonal=1)
         attention_mask = attention_mask.unsqueeze(0).unsqueeze(0) # [1, 1, S, S]
         
-        residual_state = None
+        # Memory Interaction (Simplified Titans)
+        mem_out, memory_loss = self.memory(x)
+        x = x + mem_out # Simple residual
         
-        # Titans Memory Interaction
-        # In the blueprint, Titans learns at test time to minimize "Surprise".
-        # We integrate it by retrieving memory and adding it to the input stream.
-        # memory_params: Optional dict for functional forward pass during meta-learning
-        mem_params = kwargs.get('memory_params', None)
-        memory_out, memory_loss = self.memory(x, memory_params=mem_params)
+        # Initialize mHC state
+        residual_state = None 
         
-        # Add memory context to the stream
-        # (Simple addition for now, could be gated)
-        x = x + memory_out
-        
-        residual_state = None
-        
-        # Gradient Checkpointing
+        # Gradient Checkpointing Logic
         use_checkpointing = self.config.gradient_checkpointing and self.training
         
-        for layer in self.layers:
+        if use_checkpointing:
+             # Manual init to ensure it's a tensor with grad
+             noise = torch.randn(B, S, self.config.mhc_branches, self.config.d_model, device=x.device, dtype=x.dtype) * 0.02
+             residual_state = x.unsqueeze(2) + noise
+             
+        for i, layer in enumerate(self.layers):
             if use_checkpointing:
-                # We need to ensure args are tensors or valid for checkpointing
-                # layer is a module (callable)
-                # checkpoint(function, *args)
-                # We pass the layer instance as the function? Yes, layer.__call__
-                # But checkpoint typically expects a function.
-                # Standard pattern: checkpoint(layer, x, residual_state, ...)
-                
-                # Checkpoint requires inputs to have requires_grad for at least one arg?
-                # x has it.
-                
                 residual_state = torch.utils.checkpoint.checkpoint(
                     layer,
                     x,
                     residual_state,
-                    position_embeddings,
+                    position_ids,
                     attention_mask,
+                    None, # past_key_values
+                    position_embeddings,
                     use_reentrant=False
                 )
             else:
                 residual_state = layer(
-                    x,
-                    residual_state=residual_state,
-                    position_embeddings=position_embeddings,
-                    attention_mask=attention_mask
+                    x, 
+                    residual_state, 
+                    position_ids, 
+                    attention_mask,
+                    None, # past_key_values
+                    position_embeddings
                 )
             
-        # Final aggregation
+        # Final Aggregation
         final_out = residual_state.mean(dim=2)
         final_out = self.final_norm(final_out)
         logits = self.lm_head(final_out)
         
-        # If in memory stage, we might want to return memory_loss
         return logits, final_out, memory_loss

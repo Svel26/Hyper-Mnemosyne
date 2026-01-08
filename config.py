@@ -3,8 +3,8 @@ from dataclasses import dataclass
 @dataclass
 class HyperMnemosyneConfig:
     # Model Dimensions
-    d_model: int = 2048
-    n_layers: int = 32
+    d_model: int = 768
+    n_layers: int = 12
     vocab_size: int = 50257  # Standard GPT-2/Llama tokenizer size approximation, adjust as needed
     
     # Manifold-Constrained Hyper-Connections

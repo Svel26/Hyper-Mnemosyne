@@ -1,15 +1,26 @@
-![image](IMG_0149.jpeg)
+![Hyper-Mnemosyne Header](Header_IMG.jpeg)
 
+# Hyper-Mnemosyne 🧠 (Research Prototype)
 
-# Hyper-Mnemosyne 🧠
+> [!WARNING]
+> **Status: Experimental / Work in Progress**
+> This is a small-scale research prototype (~150M parameters) designed for architectural experimentation on consumer hardware. It is **not** a production-ready LLM or a "3B parameter SOTA killer".
 
-**Hyper-Mnemosyne** is a hybrid 3B parameter Language Model designed to run and train efficiently on consumer hardware (e.g., NVIDIA RTX 3090/4090, 24GB VRAM).
+**Hyper-Mnemosyne** is an experimental testbed for exploring hybrid state-space and memory-augmented architectures on a single NVIDIA RTX 3090/4090.
 
-It synthesizes three cutting-edge architectures into a single "Neural Brain":
+It integrates simplified adaptations of three research concepts:
 
-1. **Mamba-2 Backbone**: State Space Models (SSM) for efficient, linear-time context processing (replacing Transformers).
-2. **Titans Neural Memory**: A long-term memory module that learns *at test time* to store user-specific facts permanently in weight space.
-3. **JEPA (Joint-Embedding Predictive Architecture)**: A self-supervised objective that predicts abstract representations rather than just raw pixels/tokens, enabling higher data efficiency.
+1. **Mamba-2 Backbone**: Leveraging SSD (Structured State Space Duality) for linear-time context processing.
+2. **Titans-Inspired Memory**: An experimental "Gated Residual Memory" module inserted into the residual stream (simplified from the original Titans proposal).
+3. **JEPA-Inspired Auxiliary Loss**: A latent consistency objective inspired by Joint-Embedding Predictive Architectures to improve semantic density.
+
+## 🧪 Architecture & Goals
+
+This project aims to verify whether complex architectural components like mHC (Manifold-Constrained Hyper-Connections) and Neural Memory can be stabilized and trained at a small scale.
+
+* **Scale**: ~150M Parameters (d_model=768, layers=12)
+* **Design Philosophy**: Convergence of diverse architectural ideas (SSM + Memory + Latent Prediction) into a single differentiable stack.
+* **Hardware Target**: Single Consumer GPU (24GB VRAM).
 
 ## 🚀 Quick Start
 
@@ -17,83 +28,43 @@ It synthesizes three cutting-edge architectures into a single "Neural Brain":
 
 * Linux (Ubuntu 20.04/22.04 recommended)
 * Python 3.10+
-* NVIDIA GPU with 24GB+ VRAM (RTX 3090/4090 or A10g)
+* NVIDIA GPU with 8GB+ VRAM (tested on RTX 3090)
 * CUDA Toolkit 11.8+
 
-### One-Shot Training
-
-We provide a helper script to set up the environment, download data, and start training:
+### Installation
 
 ```bash
-# Provide permissions
-chmod +x start_training.sh
-
-# Run the all-in-one launcher
-# This will setup the venv, install requirements, generate data, and start Stage 1 training.
-./start_training.sh
-```
-
-### Manual Installation
-
-```bash
-# 1. Clone & Setup Entivonment
+# 1. Clone & Setup Environment
 git clone https://github.com/svel26/Hyper-Mnemosyne
 cd Hyper-Mnemosyne
 python3 -m venv venv
 source venv/bin/activate
 
-# 2. Install Dependencies (Triton, Mamba, Torch)
+# 2. Install Dependencies
 pip install -r requirements.txt
-
-# 3. Generate Data (FineWeb-Edu)
-python3 scripts/prepare_fineweb.py --num_samples 20000
 ```
-
-## 🧠 Architecture Overview
-
-### The "Hybrid" Design
-
-Standard LLMs (Llama, GPT) are just "Next Token Predictors". Hyper-Mnemosyne is a **Joint-Embedding Predictive System**.
-
-* **Generative Head**: Predicts the next token ($L_{gen}$), allowing you to chat with it.
-* **JEPA Head**: Predicts the *embedding* of the future text from the past text ($L_{jepa}$).
-* **Memory Integration**: The Titans module injects "Surprise"-based memory states into the residual stream.
-
-### Training Protocol
-
-The model supports a **Two-Stage Training** protocol (configurable in `config.py`):
-
-1. **Stage 1 (Backbone)**: Trains the Mamba-2 core and JEPA predictor. The Titans memory is passive.
-2. **Stage 2 (Memory)**: Freezes the backbone and trains *only* the Titans neural memory module to minimize surprise.
 
 ## 🛠️ Usage
 
 ### Training
 
-The training process is split into two stages:
+The training protocol allows for experimentation with the backbone and memory modules separately.
 
 #### Stage 1: Backbone Training
 
-Trains the core Mamba-2 model and JEPA predictor.
+Trains the Mamba-2 core with the mHC-inspired mixing and JEPA auxiliary loss.
 
 ```bash
-python3 -m training.train --batch_size 1 --max_steps 5000 --training_stage backbone
+# Small-scale debug run
+python3 -m training.train --batch_size 4 --max_steps 1000 --training_stage backbone --compile
 ```
 
-#### Stage 2: Memory Training (Titans)
+#### Stage 2: Memory Training (Experimental)
 
-Freezes the backbone and trains the Titans Neural Memory module. Requires a pretrained Stage 1 model.
-
-```bash
-python3 -m training.train --batch_size 1 --max_steps 1000 --training_stage memory --pretrained_path model_final.pt
-```
-
-### Data Generation
-
-Hyper-Mnemosyne uses a JEPA-masked version of FineWeb-Edu.
+Freezes the backbone and trains only the memory gating/residual connection.
 
 ```bash
-python3 scripts/prepare_fineweb.py --num_samples 100000 --seq_len 4096 --output_dir data/
+python3 -m training.train --batch_size 4 --max_steps 500 --training_stage memory --pretrained_path model_final.pt
 ```
 
 ### Inference
@@ -105,18 +76,16 @@ python3 inference.py --prompt "The future of AI is"
 ## 📂 Project Structure
 
 ```text
-├── config.py               # Hyperparameters (Dims, Layers, JEPA weights)
+├── config.py               # Hyperparameters (Scaled down for research)
 ├── model/
-│   ├── backbone.py         # Main HyperMnemosyne Class & Hybrid Blocks
-│   ├── mhc.py              # Manifold-Constrained Hyper-Connections
-│   ├── titans.py           # Neural Memory Module
-│   └── triton_kernels.py   # Custom CUDA/Triton Kernels (Sinkhorn)
+│   ├── backbone.py         # Main Model Class
+│   ├── mhc.py              # Manifold-Constrained Hyper-Connections (Triton)
+│   ├── titans.py           # Simplified Gated Memory Module
+│   └── triton_kernels.py   # Custom CUDA/Triton Kernels
 ├── training/
-│   ├── train.py            # Main Loop (Two-Stage logic)
-│   ├── muon.py             # Muon Optimizer (Memory Efficient)
-│   └── data_utils.py       # Data Loading & JEPA Masking
-├── scripts/
-│   └── prepare_fineweb.py  # Production Data Pipeline
+│   ├── train.py            # Training Loop
+│   ├── muon.py             # Muon Optimizer
+│   └── data_utils.py       # Data Loading
 └── requirements.txt
 ```
 

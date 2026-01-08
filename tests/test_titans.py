@@ -1,59 +1,46 @@
 import torch
-import torch.nn as nn
 import pytest
-from model.titans import TitansMemoryLayer
-from config import HyperMnemosyneConfig
+from model.titans import TitansMemoryLayer, MemoryMLP
 
-def test_titans_meta_learning_gradients():
-    """
-    Verify that the meta-parameters (step_size, decay) receive gradients
-    after the inner-loop/outer-loop process.
-    """
-    config = HyperMnemosyneConfig()
-    titans = TitansMemoryLayer(config)
+class MockConfig:
+    d_model = 128
+    memory_width = 256
     
-    # Enable grad for meta-params
-    assert titans.step_size.requires_grad
-    assert titans.decay.requires_grad
+def test_titans_memory_layer_structure():
+    config = MockConfig()
+    memory = TitansMemoryLayer(config)
     
-    # Data
-    B, S, D = 2, 10, config.d_model
-    x_support = torch.randn(B, S, D)
-    x_query = torch.randn(B, S, D)
+    assert isinstance(memory.memory_mlp, MemoryMLP)
     
-    # 1. Inner Loop (Support Set)
-    _, loss_support = titans(x_support)
+def test_titans_forward_pass():
+    config = MockConfig()
+    memory = TitansMemoryLayer(config)
     
-    # 2. Get Updated Weights (Functional)
-    # This involves taking gradients of loss_support w.r.t memory_mlp weights
-    # And computing new weights using step_size/decay
-    updated_weights = titans.get_updated_weights(loss_support)
+    B, S, D = 2, 10, 128
+    x = torch.randn(B, S, D)
     
-    # Check if updated weights are part of the graph connected to step_size
-    # (By checking if we can backprop from them)
-    # Pick one weight to test
-    w1_new = updated_weights['w1']
-    # w1_new = w1_old - step_size * grad
-    # So w1_new should have grad_fn connecting to step_size
+    mem_out, surprise_loss = memory(x)
     
-    # 3. Outer Loop (Query Set)
-    # Forward pass using updated weights
-    _, loss_query = titans(x_query, memory_params=updated_weights)
+    # Check shapes
+    assert mem_out.shape == (B, S, D), f"Expected shape {(B, S, D)}, got {mem_out.shape}"
+    assert surprise_loss.ndim == 0, "Surprise loss should be scalar mean"
     
-    # 4. Backward
-    loss_query.backward()
-    
-    # 5. Verify Gradients on Meta-Params
-    assert titans.step_size.grad is not None, "step_size did not receive gradient!"
-    assert titans.decay.grad is not None, "decay did not receive gradient!"
-    
-    print(f"Step Size Grad: {titans.step_size.grad}")
-    
-    # Ensure MemoryMLP weights also have grads (from the standard path + optimization path?)
-    # In MAML (Model-Agnostic Meta-Learning), we optimize the initial weights too.
-    # Here, we do want to optimize the base memory weights too? 
-    # Yes, usually.
-    assert titans.memory_mlp.w1.weight.grad is not None
+    # Check value consistency (simple pass)
+    # MLP is w2(act(w1(x)))
+    # If initialized, output shouldn't be zero/nan
+    assert not torch.isnan(mem_out).any()
+    assert not torch.isnan(surprise_loss).any()
 
-if __name__ == "__main__":
-    test_titans_meta_learning_gradients()
+def test_titans_gradients():
+    config = MockConfig()
+    memory = TitansMemoryLayer(config)
+    
+    x = torch.randn(2, 5, 128, requires_grad=True)
+    mem_out, loss = memory(x)
+    
+    loss.backward()
+    
+    # Check that gradients flowed to weights
+    assert memory.memory_mlp.w1.weight.grad is not None
+    assert memory.memory_mlp.w2.weight.grad is not None
+    assert x.grad is not None

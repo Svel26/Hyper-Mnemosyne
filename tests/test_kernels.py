@@ -1,7 +1,7 @@
 import torch
 import pytest
 import math
-from model.triton_kernels import mhc_forward, sinkhorn_kernel, fused_mhc_mixing_kernel
+from model.triton_kernels import mhc_forward, sinkhorn_kernel
 
 def torch_sinkhorn(w, n_iters=5):
     """Reference PyTorch implementation of Log-Space Sinkhorn"""

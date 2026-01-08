@@ -8,7 +8,7 @@ from torch.autograd import Function
 # -----------------------------------------------------------------------------
 
 @triton.jit
-def sinkhorn_knopp_kernel(
+def sinkhorn_kernel(
     w_ptr,
     out_ptr,
     N: tl.constexpr,
@@ -52,9 +52,6 @@ def sinkhorn_knopp_kernel(
         ew = tl.exp(w)
         
         # Col Sums (Indices % 4)
-        # Since standard mod might be tricky, checking range or just mask is safer? 
-        # w_offsets % 4 is fine.
-        
         c0 = tl.sum(tl.where(w_offsets % 4 == 0, ew, 0.0), axis=0)
         c1 = tl.sum(tl.where(w_offsets % 4 == 1, ew, 0.0), axis=0)
         c2 = tl.sum(tl.where(w_offsets % 4 == 2, ew, 0.0), axis=0)
@@ -147,15 +144,18 @@ class FusedMHCFunction(Function):
         w: [N, N] (raw logits)
         """
         B, S, N, D = x.shape
-        assert N == 4
+        # Assertion added to prevent silent failures if config.mhc_branches != 4
+        assert N == 4, f"MHC Triton kernel currently hardcoded for N=4, got N={N}"
         
         # Sinkhorn
         P = torch.empty_like(w)
-        sinkhorn_knopp_kernel[(1,)](w, P, N=4, n_iters=n_iters)
+        # Using sinkhorn_kernel (renamed from sinkhorn_knopp_kernel)
+        sinkhorn_kernel[(1,)](w, P, N=4, n_iters=n_iters)
         
         # Mixing
         y = torch.empty_like(x)
         grid = (B, S)
+        # Ensure BLOCK_SIZE_D is power of 2 and consistent
         BLOCK_SIZE_D = 128
         
         fused_mhc_forward_kernel[grid](
