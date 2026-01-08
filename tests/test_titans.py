@@ -19,24 +19,26 @@ def test_titans_forward_pass():
     B, S, D = 2, 10, 128
     x = torch.randn(B, S, D)
     
-    mem_out, surprise_loss = memory(x)
+    mem_out, surprise_loss, state = memory(x)
     
     # Check shapes
     assert mem_out.shape == (B, S, D), f"Expected shape {(B, S, D)}, got {mem_out.shape}"
     assert surprise_loss.ndim == 0, "Surprise loss should be scalar mean"
+    assert state.shape == (B, S, D), "State should match input size for this simplified EMA"
     
     # Check value consistency (simple pass)
     # MLP is w2(act(w1(x)))
     # If initialized, output shouldn't be zero/nan
     assert not torch.isnan(mem_out).any()
     assert not torch.isnan(surprise_loss).any()
+    assert not torch.isnan(state).any()
 
 def test_titans_gradients():
     config = MockConfig()
     memory = TitansMemoryLayer(config)
     
     x = torch.randn(2, 5, 128, requires_grad=True)
-    mem_out, loss = memory(x)
+    mem_out, loss, _ = memory(x)
     
     loss.backward()
     

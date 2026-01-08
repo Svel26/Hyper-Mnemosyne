@@ -52,7 +52,8 @@ class HybridBlock(nn.Module):
                 d_model=config.d_model,
                 d_state=config.d_state,
                 d_conv=config.d_conv,
-                expand=config.expand
+                expand=config.expand,
+                layer_idx=layer_idx
             )
             
         self.ffn_norm = nn.LayerNorm(config.d_model)
@@ -62,7 +63,7 @@ class HybridBlock(nn.Module):
             nn.Linear(config.d_model * 4, config.d_model)
         )
 
-    def forward(self, x, residual_state=None, position_ids=None, attention_mask=None, past_key_values=None, position_embeddings=None):
+    def forward(self, x, residual_state=None, position_ids=None, attention_mask=None, past_key_values=None, position_embeddings=None, inference_params=None):
         """
         x: [B, S, D]
         residual_state: [B, S, N, D]
@@ -97,7 +98,8 @@ class HybridBlock(nn.Module):
             
             mixer_out = self.mixer(**kwargs)[0]
         else:
-            mixer_out = self.mixer(normalized_input)
+            # Mamba-2
+            mixer_out = self.mixer(normalized_input, inference_params=inference_params)
             
         # 5. FFN
         ffn_out = self.ffn(self.ffn_norm(mixer_out + layer_input))
@@ -151,7 +153,12 @@ class HyperMnemosyne(nn.Module):
         B, S, D = x.shape
         
         # Create Position IDs for RoPE
-        position_ids = torch.arange(0, S, dtype=torch.long, device=x.device).unsqueeze(0)
+        inference_params = kwargs.get("inference_params", None)
+        seqlen_offset = 0
+        if inference_params is not None:
+             seqlen_offset = inference_params.seqlen_offset
+             
+        position_ids = torch.arange(seqlen_offset, seqlen_offset + S, dtype=torch.long, device=x.device).unsqueeze(0)
         
         # RoPE Embedding
         # Required for this version of LlamaAttention
@@ -162,7 +169,8 @@ class HyperMnemosyne(nn.Module):
         attention_mask = attention_mask.unsqueeze(0).unsqueeze(0) # [1, 1, S, S]
         
         # Memory Interaction (Simplified Titans)
-        mem_out, memory_loss = self.memory(x)
+        titans_state = kwargs.get("titans_state", None)
+        mem_out, memory_loss, new_titans_state = self.memory(x, titans_state)
         x = x + mem_out # Simple residual
         
         # Initialize mHC state
@@ -195,7 +203,8 @@ class HyperMnemosyne(nn.Module):
                     position_ids, 
                     attention_mask,
                     None, # past_key_values
-                    position_embeddings
+                    position_embeddings,
+                    inference_params=kwargs.get("inference_params", None)
                 )
             
         # Final Aggregation
@@ -203,4 +212,4 @@ class HyperMnemosyne(nn.Module):
         final_out = self.final_norm(final_out)
         logits = self.lm_head(final_out)
         
-        return logits, final_out, memory_loss
+        return logits, final_out, memory_loss, new_titans_state

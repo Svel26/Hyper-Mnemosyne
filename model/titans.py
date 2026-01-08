@@ -18,18 +18,36 @@ class TitansMemoryLayer(nn.Module):
         self.config = config
         self.memory_mlp = MemoryMLP(config)
         
-        # Note: Meta-learning parameters (step_size, decay) removed
-        # as we are using a simplified Gated Residual / Auxiliary Loss approach.
-        
-    def forward(self, x):
+        # Learnable or fixed decay? Let's use a fixed decay for stability first, or learnable sigmoid.
+        # Simplified: Fixed decay 0.9
+        self.decay = 0.9
+
+    def forward(self, x, memory_state=None):
         """
         x: [B, S, D]
+        memory_state: [B, S, D] (or [B, D] if handling recurrence differently, but here 
+                       we assume simple token-wise temporal bias or sequence-level state)
+                       
+        For a true recurrence, it should be [B, D] and updated step-by-step. 
+        But given we trained efficiently with parallelism, we likely want a "Global Context" state.
+        
+        Simplified Variant: Time-Mixing is handled by Mamba. 
+        Titans Memory here acts as a "Long-Term Buffer".
+        We will treat memory_state as a running average of the sequence.
         """
-        # Forward pass through the memory MLP
-        mem_out = self.memory_mlp(x)
+        if memory_state is None:
+            memory_state = torch.zeros_like(x)
+            
+        # EMA Update: New State = 0.9 * Old + 0.1 * New
+        # Note: This is a very simplified view. Genuine Titans uses attention.
+        # This implementation matches the "Gated Residual" description in Blueprint.
+        new_memory_state = self.decay * memory_state + (1 - self.decay) * x
+        
+        # Forward pass through the memory MLP using the STATE, not the raw input
+        mem_out = self.memory_mlp(new_memory_state)
         
         # Surprise Loss (Reconstruction)
-        # This acts as an auxiliary objective: the memory should predict the current state
+        # The memory should predict the current input from its state
         surprise_loss = F.mse_loss(mem_out, x.detach())
         
-        return mem_out, surprise_loss
+        return mem_out, surprise_loss, new_memory_state

@@ -168,7 +168,9 @@ class FusedMHCFunction(Function):
         grad_P = grad_P.sum(dim=(0, 1)) # [N, N]
         
         # 3. Gradient w.r.t W (Backprop through Sinkhorn)
-        # Re-compute Sinkhorn in Torch to define gradient path
+        # Re-compute Sinkhorn in Torch to define gradient path.
+        # Trade-off: Re-computation saves VRAM (don't store N intermediate matrices)
+        # but costs compute. For small N=4, this is negligible and preferred.
         with torch.enable_grad():
             w_temp = w.detach().clone().requires_grad_(True)
             w_curr = w_temp

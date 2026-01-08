@@ -8,6 +8,8 @@ import pandas as pd
 # But user has pandas/pyarrow likely. We'll assume standard tools or text for now.
 # Let's write a simple generator.
 
+import math
+
 class JEPADataset(IterableDataset):
     def __init__(self, data_dir, seq_len=4096):
         self.data_dir = data_dir
@@ -16,9 +18,16 @@ class JEPADataset(IterableDataset):
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
-        # Simple single-process load for now, or per-worker file split could be added
-        
-        for file_path in self.files:
+        if worker_info is None:
+            my_files = self.files
+        else:
+            # Per-worker file split
+            per_worker = int(math.ceil(len(self.files) / float(worker_info.num_workers)))
+            start = worker_info.id * per_worker
+            end = start + per_worker
+            my_files = self.files[start:end]
+            
+        for file_path in my_files:
             try:
                 # Read parquet (requires pyarrow or fastparquet)
                 df = pd.read_parquet(file_path)
