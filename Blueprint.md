@@ -20,8 +20,8 @@ DeepSeek's "Manifold-Constrained Hyper-Connections" (mHC) proposes expanding the
 
 In this prototype, we implement a simplified version of mHC:
 
-* **Parallel Branches**: The residual stream is split into 4 parallel "lanes".
-* **Mixing**: We use a custom Triton kernel to perform Sinkhorn normalization, ensuring the mixing matrices typically remain stable.
+* **Parallel Branches**: The residual stream is split into 4 parallel "lanes" (features/depth).
+* **Mixing**: We use a custom Triton kernel to perform Sinkhorn normalization. This ensures the mixing weights are doubly-stochastic, effectively "shuffling" or re-weighting information across branches without changing the total signal magnitude.
 * **Initialization**: Branches are initialized with noise to break symmetry, a critical fix for training dynamics at this scale.
 
 ---

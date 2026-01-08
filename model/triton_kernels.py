@@ -20,56 +20,41 @@ def sinkhorn_kernel(
     """
     # Load W [16]
     w_offsets = tl.arange(0, 16)
-    w = tl.load(w_ptr + w_offsets)
+    w_flat = tl.load(w_ptr + w_offsets)
+    
+    # View as [4, 4] for efficient reduction matches N=4 constraint
+    w = tl.reshape(w_flat, (4, 4))
     
     # Sinkhorn Iterations (Log Space)
     for _ in range(n_iters):
         # --- Row Norm ---
-        ew = tl.exp(w) # [16]
+        # LogSumExp over rows (axis 1)
+        # We compute max first for numerical stability (optional in log space pure subtraction but good practice)
+        # For Sinkhorn in log-space: u <- u - lse(u, axis=1)
         
-        # Calculate Row Sums using masking and reduction
-        # Row 0 (indices 0-3)
-        r0 = tl.sum(tl.where(w_offsets < 4, ew, 0.0), axis=0)
-        # Row 1 (indices 4-7)
-        r1 = tl.sum(tl.where((w_offsets >= 4) & (w_offsets < 8), ew, 0.0), axis=0)
-        # Row 2 (indices 8-11)
-        r2 = tl.sum(tl.where((w_offsets >= 8) & (w_offsets < 12), ew, 0.0), axis=0)
-        # Row 3 (indices 12-15)
-        r3 = tl.sum(tl.where(w_offsets >= 12, ew, 0.0), axis=0)
+        # Triton's tl.max/sum reducers work on specific axis
+        # current w is [4, 4]
         
-        lse0 = tl.log(r0)
-        lse1 = tl.log(r1)
-        lse2 = tl.log(r2)
-        lse3 = tl.log(r3)
+        # Row LSE: [4, 1]
+        max_row = tl.max(w, axis=1)
+        sum_exp_row = tl.sum(tl.exp(w - max_row[:, None]), axis=1)
+        lse_row = max_row + tl.log(sum_exp_row)
         
-        # Subtract Row Sums
-        w = tl.where(w_offsets < 4, w - lse0, w)
-        w = tl.where((w_offsets >= 4) & (w_offsets < 8), w - lse1, w)
-        w = tl.where((w_offsets >= 8) & (w_offsets < 12), w - lse2, w)
-        w = tl.where(w_offsets >= 12, w - lse3, w)
-
+        # Broadcast subtraction: w [4, 4] - lse_row [4, 1]
+        w = w - lse_row[:, None]
+        
         # --- Col Norm ---
-        ew = tl.exp(w)
+        # Col LSE: [1, 4]
+        max_col = tl.max(w, axis=0)
+        sum_exp_col = tl.sum(tl.exp(w - max_col[None, :]), axis=0)
+        lse_col = max_col + tl.log(sum_exp_col)
         
-        # Col Sums (Indices % 4)
-        c0 = tl.sum(tl.where(w_offsets % 4 == 0, ew, 0.0), axis=0)
-        c1 = tl.sum(tl.where(w_offsets % 4 == 1, ew, 0.0), axis=0)
-        c2 = tl.sum(tl.where(w_offsets % 4 == 2, ew, 0.0), axis=0)
-        c3 = tl.sum(tl.where(w_offsets % 4 == 3, ew, 0.0), axis=0)
-        
-        lse_c0 = tl.log(c0)
-        lse_c1 = tl.log(c1)
-        lse_c2 = tl.log(c2)
-        lse_c3 = tl.log(c3)
-        
-        # Subtract Col Sums
-        w = tl.where(w_offsets % 4 == 0, w - lse_c0, w)
-        w = tl.where(w_offsets % 4 == 1, w - lse_c1, w)
-        w = tl.where(w_offsets % 4 == 2, w - lse_c2, w)
-        w = tl.where(w_offsets % 4 == 3, w - lse_c3, w)
+        # Broadcast subtraction: w [4, 4] - lse_col [1, 4]
+        w = w - lse_col[None, :]
 
     # Final Exp and Store
-    tl.store(out_ptr + w_offsets, tl.exp(w))
+    w_out = tl.reshape(tl.exp(w), (16,))
+    tl.store(out_ptr + w_offsets, w_out)
 
 
 @triton.jit
