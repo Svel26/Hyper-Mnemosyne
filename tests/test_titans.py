@@ -33,6 +33,37 @@ def test_titans_forward_pass():
     assert not torch.isnan(surprise_loss).any()
     assert not torch.isnan(state).any()
 
+def test_titans_time_mixing():
+    """
+    Verify that the memory state actually mixes time.
+    If we input [1, 0, 0, 0], the state at t=3 should be non-zero (decayed 1).
+    In the broken version, it was 0.
+    """
+    config = MockConfig()
+    config.d_model = 1 # Override for simple scalar test
+    config.memory_width = 4
+    memory = TitansMemoryLayer(config)
+    memory.decay = 0.5 # Simple decay
+    
+    # Input: [1, 0, 0, 0]
+    B, S, D = 1, 4, 1
+    x = torch.zeros(B, S, D)
+    x[0, 0, 0] = 1.0
+    
+    _, _, state = memory(x) # Training mode
+    
+    # Expected State Evolution:
+    # t=0: d*0 + (1-d)*1 = 0.5
+    # t=1: d*0.5 + (1-d)*0 = 0.25
+    # t=2: d*0.25 + (1-d)*0 = 0.125
+    # t=3: d*0.125 + (1-d)*0 = 0.0625
+    
+    final_val = state[0, 3, 0].item()
+    print(f"Final State Value: {final_val}")
+    
+    assert final_val > 0.0, "State should decay over time, not disappear!"
+    assert abs(final_val - 0.0625) < 1e-4, f"Expected 0.0625, got {final_val}"
+
 def test_titans_gradients():
     config = MockConfig()
     memory = TitansMemoryLayer(config)

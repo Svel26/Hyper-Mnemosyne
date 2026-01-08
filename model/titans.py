@@ -35,13 +35,35 @@ class TitansMemoryLayer(nn.Module):
         Titans Memory here acts as a "Long-Term Buffer".
         We will treat memory_state as a running average of the sequence.
         """
+        # --- TRAINING MODE (Parallel-ish via Loop needed for correct time-mixing) ---
         if memory_state is None:
-            memory_state = torch.zeros_like(x)
+            B, S, D = x.shape
+            # Initialize hidden state (t=-1)
+            h = torch.zeros(B, D, device=x.device, dtype=x.dtype)
             
-        # EMA Update: New State = 0.9 * Old + 0.1 * New
-        # Note: This is a very simplified view. Genuine Titans uses attention.
-        # This implementation matches the "Gated Residual" description in Blueprint.
-        new_memory_state = self.decay * memory_state + (1 - self.decay) * x
+            states = []
+            # Sequential Scan (loop over time)
+            # h_t = decay * h_{t-1} + (1-decay) * x_t
+            for t in range(S):
+                h = self.decay * h + (1 - self.decay) * x[:, t, :]
+                states.append(h)
+                
+            # Stack to get [B, S, D]
+            new_memory_state = torch.stack(states, dim=1)
+            
+        # --- INFERENCE MODE (Step-by-Step) ---
+        else:
+             # memory_state passed in is [B, D] from previous step
+             # But wait, in inference loop we pass 'titans_state' which is likely the LAST state.
+             # However, backbone.py passes 'titans_state' which we return as new_memory_state.
+             # Let's assume memory_state here is [B, D] (the "h" from previous step).
+             
+             # But if input is [B, 1, D], we do one update.
+             # new_state = decay * old + (1-decay) * x
+             new_memory_state = self.decay * memory_state + (1 - self.decay) * x.squeeze(1)
+             
+             # Restore dimension for output [B, 1, D]
+             new_memory_state = new_memory_state.unsqueeze(1)
         
         # Forward pass through the memory MLP using the STATE, not the raw input
         mem_out = self.memory_mlp(new_memory_state)
@@ -50,4 +72,13 @@ class TitansMemoryLayer(nn.Module):
         # The memory should predict the current input from its state
         surprise_loss = F.mse_loss(mem_out, x.detach())
         
-        return mem_out, surprise_loss, new_memory_state
+        if memory_state is not None:
+             # Return state as [B, D] for next inference step
+             return_state = new_memory_state.squeeze(1)
+        else:
+             # Return full sequence [B, S, D] (though backbone might not use it, useful for debug)
+             # Actually backbone expects 'new_titans_state' to be passed back in inference loop.
+             # If we are in training, we don't care about return state.
+             return_state = new_memory_state
+             
+        return mem_out, surprise_loss, return_state
