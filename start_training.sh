@@ -23,7 +23,7 @@ fi
 echo "Starting Stage 1: Backbone Training (50,000 Steps)..."
 # Batch 1 * Acc 4 = Batch 4. 50k steps.
 python3 -m training.train \
-    --data_dir data/fineweb_prod \
+    --data_dir data/ \
     --batch_size 1 \
     --grad_accum_steps 4 \
     --max_steps 50000 \
@@ -36,7 +36,7 @@ echo "Stage 1 Complete. Model saved to model_final.pt"
 echo "Starting Stage 2: Titans Memory Training (5,000 Steps)..."
 # 5k steps for memory to settle.
 python3 -m training.train \
-    --data_dir data/fineweb_prod \
+    --data_dir data/ \
     --batch_size 1 \
     --grad_accum_steps 4 \
     --max_steps 5000 \

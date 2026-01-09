@@ -104,15 +104,18 @@ def prepare_mixed_data(output_dir, num_samples=500_000, seq_len=4096, batch_size
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.model_max_length = 100000
     
-    print("Starting Processing Loop...")
+    print("Starting Processing Loop (Packed)...")
     
     current_shard = []
     shard_idx = 0
-    samples_per_shard = 50000 # Creates ~10-20 files for 1M goal
+    samples_per_shard = 5000 
+    
+    # Packing Buffer
+    token_buffer = []
     
     total_processed = 0
     
-    import torch # Imported here to ensure validity in worker if needed, but main thread is fine
+    import torch 
     
     # iterate
     for i, example in enumerate(mixed_dataset):
@@ -121,51 +124,48 @@ def prepare_mixed_data(output_dir, num_samples=500_000, seq_len=4096, batch_size
             
         text = example["text"]
         
-        # Tokenization & Masking Logic (Inline for streaming loop simplicity or call helper)
-        # Doing it inline to avoid 'map' complexity with streaming mixed datasets
+        # 1. Tokenize
+        tokens = tokenizer.encode(text) 
+        if len(tokens) < 10: continue # Skip tiny fragments
         
-        tokenized = tokenizer(text, truncation=False, return_tensors="pt")
-        input_ids = tokenized["input_ids"][0]
+        # 2. Add to buffer with EOS
+        token_buffer.extend(tokens)
+        token_buffer.append(tokenizer.eos_token_id)
         
-        # Filter very short
-        if len(input_ids) < 50: continue
-
-        # Handle Length
-        if len(input_ids) < seq_len + 1:
-            # Pad
-            padding = torch.full((seq_len + 1 - len(input_ids),), tokenizer.eos_token_id, dtype=torch.long)
-            input_ids = torch.cat([input_ids, padding])
-        else:
-            # Truncate (random crop could be better for code, but prefix is fine)
-            input_ids = input_ids[:seq_len + 1]
-
-        # JEPA Masking
-        target_ids = input_ids.clone()
-        noisy_seq = input_ids.clone()
-        
-        mask_indices = torch.rand(len(noisy_seq)) < 0.15
-        random_tokens = torch.randint(0, len(tokenizer), (mask_indices.sum(),))
-        noisy_seq[mask_indices] = random_tokens
-        
-        # Add to shard buffer
-        current_shard.append({
-            "context_ids": noisy_seq.tolist(),
-            "target_ids": target_ids.tolist()
-        })
-        
-        total_processed += 1
-        
-        if len(current_shard) >= samples_per_shard:
-            # Flush shard
-            import pandas as pd
-            df = pd.DataFrame(current_shard)
-            output_file = os.path.join(output_dir, f"train_data_{shard_idx}.parquet")
-            df.to_parquet(output_file)
-            print(f"Saved {output_file} ({len(current_shard)} samples) - Total: {total_processed}")
+        # 3. Drain buffer into chunks
+        while len(token_buffer) >= seq_len + 1:
+            # Slice rigid chunk
+            chunk = token_buffer[:seq_len + 1]
+            token_buffer = token_buffer[seq_len + 1:] # Slide window
             
-            current_shard = []
-            shard_idx += 1
-
+            # Convert to tensor
+            input_ids = torch.tensor(chunk, dtype=torch.long)
+            
+            # JEPA Masking
+            target_ids = input_ids.clone()
+            noisy_seq = input_ids.clone()
+            
+            mask_indices = torch.rand(len(noisy_seq)) < 0.15
+            random_tokens = torch.randint(0, len(tokenizer), (mask_indices.sum(),))
+            noisy_seq[mask_indices] = random_tokens
+            
+            # Add to shard buffer
+            current_shard.append({
+                "context_ids": noisy_seq.tolist(),
+                "target_ids": target_ids.tolist()
+            })
+            
+            total_processed += 1
+            
+            if len(current_shard) >= samples_per_shard:
+                import pandas as pd
+                df = pd.DataFrame(current_shard)
+                output_file = os.path.join(output_dir, f"train_data_{shard_idx}.parquet")
+                df.to_parquet(output_file)
+                print(f"Saved {output_file} ({len(current_shard)} samples) - Total: {total_processed}")
+                
+                current_shard = []
+                shard_idx += 1
     # Final flush
     if len(current_shard) > 0:
         import pandas as pd
