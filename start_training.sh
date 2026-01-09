@@ -13,10 +13,10 @@ else
 fi
 
 # 2. Check Data (Scaled Up)
+# 2. Check Data (Mixed: Code + Reasoning)
 if [ ! -d "data" ] || [ -z "$(ls -A data)" ]; then
-    echo "Generating Large Scale FineWeb-Edu Data (1M samples)..."
-    # 1M sample-10BT subset. ~10GB parquet on disk.
-    python3 scripts/prepare_fineweb.py --num_samples 1000000 --output_dir data/ --seq_len 4096
+    echo "Generating Mixed Data (Code + FineWeb-Edu)..."
+    python3 scripts/prepare_mixed_data.py --output_dir data/ --num_samples 500000 --seq_len 4096
 fi
 
 # 3. Backbone Training (Stage 1) - FULL SCALE
