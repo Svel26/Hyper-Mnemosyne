@@ -26,22 +26,26 @@ This project aims to verify whether complex architectural components like mHC (M
 
 ### Prerequisites
 
-* Linux (Ubuntu 20.04/22.04 recommended)
+* Linux (Ubuntu 20.04/22.04)
 * Python 3.10+
-* NVIDIA GPU with 8GB+ VRAM (tested on RTX 3090)
-* CUDA Toolkit 11.8+
+* NVIDIA GPU (24GB VRAM recommended)
+* CUDA 11.8+
 
-### Installation
+### Installation & Launch
 
 ```bash
-# 1. Clone & Setup Environment
+# 1. Clone & Setup
 git clone https://github.com/svel26/Hyper-Mnemosyne
 cd Hyper-Mnemosyne
 python3 -m venv venv
 source venv/bin/activate
 
-# 2. Install Dependencies
+# 2. Install
 pip install -r requirements.txt
+pip install flash-attn --no-build-isolation
+
+# 3. Run (Auto-Data Prep + Training)
+bash start_training.sh
 ```
 
 ## 🛠️ Usage
