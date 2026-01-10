@@ -45,16 +45,23 @@ def get_param_groups(model):
         {'params': vector_params, 'optimizer': 'adamw', 'lr': 0.001}
     ]
 
-def save_checkpoint(model, step, keep=2):
+def save_checkpoint(model, optimizers, step, keep=2):
     """
-    Saves a checkpoint and rotates old ones to save disk space.
+    Saves a checkpoint (model + optimizer states) and rotates old ones.
     """
     import glob
     import os
     
     filename = f"model_step_{step}.pt"
     print(f"Saving checkpoint to {filename}...")
-    torch.save(model.state_dict(), filename)
+    
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'step': step,
+        'optimizer_states': [opt.state_dict() for opt in optimizers]
+    }
+    
+    torch.save(checkpoint, filename)
     
     # Rotate
     checkpoints = sorted(glob.glob("model_step_*.pt"), key=os.path.getmtime)
@@ -102,9 +109,21 @@ def train(args):
             latest_ckpt = f"model_step_{max_step}.pt"
             print(f"Resuming from latest checkpoint: {latest_ckpt} (Step {max_step})")
             
-            state_dict = torch.load(latest_ckpt, map_location=device)
-            model.load_state_dict(state_dict, strict=False)
-            start_step = max_step
+            try:
+                checkpoint = torch.load(latest_ckpt, map_location=device)
+                
+                # Handle legacy checkpoints (just model weights)
+                if 'model_state_dict' in checkpoint:
+                     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                     # Optimizer state loading happens after optimizer creation
+                else:
+                     # Old format
+                     model.load_state_dict(checkpoint, strict=False)
+                
+                start_step = max_step
+            except Exception as e:
+                print(f"Failed to load checkpoint {latest_ckpt}: {e}")
+                start_step = 0
         
 
         
@@ -153,6 +172,22 @@ def train(args):
     if args.compile:
         print("Compiling model with torch.compile...")
         model = torch.compile(model)
+
+    # 3b. Load Optimizer State if Resuming
+    if start_step > 0 and checkpoints:
+        latest_ckpt = f"model_step_{start_step}.pt"
+        try:
+            checkpoint = torch.load(latest_ckpt, map_location=device)
+            if 'optimizer_states' in checkpoint:
+                 print("Loading optimizer states...")
+                 opt_states = checkpoint['optimizer_states']
+                 if len(opt_states) == len(optimizers):
+                     for opt, state in zip(optimizers, opt_states):
+                         opt.load_state_dict(state)
+                 else:
+                     print("Warning: Optimizer count mismatch, skipping state load.")
+        except Exception as e:
+            print(f"Error loading optimizer state: {e}")
 
     # 4. Data
     dataloader = create_dataloader(args.data_dir, args.batch_size, config.max_seq_len)
@@ -240,7 +275,7 @@ def train(args):
             print(log_str)
             
         if step % 100 == 0:
-             save_checkpoint(model, step)
+             save_checkpoint(model, optimizers, step)
 
     print("Saving final model...")
     torch.save(model.state_dict(), "model_final.pt")

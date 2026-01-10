@@ -16,7 +16,7 @@ fi
 # 2. Check Data (Mixed: Code + Reasoning)
 if [ ! -d "data" ] || [ -z "$(ls -A data)" ]; then
     echo "Generating Mixed Data (Code + FineWeb-Edu)..."
-    python3 scripts/prepare_mixed_data.py --output_dir data/ --num_samples 500000 --seq_len 4096
+    python3 scripts/prepare_fast.py --output_dir data/ --num_samples 500000 --seq_len 4096
 fi
 
 # 3. Backbone Training (Stage 1) - FULL SCALE
@@ -25,7 +25,7 @@ echo "Starting Stage 1: Backbone Training (50,000 Steps)..."
 python3 -m training.train \
     --data_dir data/ \
     --batch_size 1 \
-    --grad_accum_steps 4 \
+    --grad_accum_steps 16 \
     --max_steps 50000 \
     --compile \
     --training_stage backbone
@@ -38,7 +38,7 @@ echo "Starting Stage 2: Titans Memory Training (5,000 Steps)..."
 python3 -m training.train \
     --data_dir data/ \
     --batch_size 1 \
-    --grad_accum_steps 4 \
+    --grad_accum_steps 16 \
     --max_steps 5000 \
     --pretrained_path model_final.pt \
     --compile \
