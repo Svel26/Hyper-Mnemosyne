@@ -17,8 +17,13 @@ def generate(args):
     
     print(f"Loading weights from {args.model_path}...")
     try:
-        state_dict = torch.load(args.model_path, map_location=device)
+        checkpoint = torch.load(args.model_path, map_location=device)
         
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+            
         # Handle torch.compile prefix
         new_state_dict = {}
         for k, v in state_dict.items():
@@ -54,17 +59,30 @@ def generate(args):
     titans_state = None
     inference_params = None
     
-    # Note: inference_params for Mamba disabled due to prefill assertion errors in current version.
+    # Initialize InferenceParams for Mamba if available
+    if InferenceParams is not None:
+        inference_params = InferenceParams(max_seqlen=config.max_seq_len, max_batch_size=1)
+
+    print("-" * 40)
+    print(f"Generating from prompt: '{args.prompt}'")
+    print("-" * 40)
+    # Print prompt first
+    print(args.prompt, end="", flush=True)
     
     with torch.no_grad():
         # 1. Prefill Stage (Process whole prompt)
-        print(f"Prefill input shape: {input_ids.shape}")
-        # Pass inference_params=None, titans_state=None (init)
-        logits, _, _, titans_state = model(input_ids, inference_params=None, titans_state=titans_state)
+        # Pass inference_params (if Mamba) and titans_state=None (init)
+        
+        # NOTE: Mamba2 requires seqlen_offset to be set manually if not using their generation driver
+        # But InferenceParams handles it if we update it? 
+        # Actually standard usage: 
+        # prefill: inference_params.seqlen_offset = 0
+        
+        logits, _, _, titans_state = model(input_ids, inference_params=inference_params, titans_state=None)
         next_token_logits = logits[:, -1, :]
         
         # Sampling (Prefill)
-        next_token_logits = next_token_logits / 0.8 
+        next_token_logits = next_token_logits / args.temperature 
         top_k = 50
         v, i = torch.topk(next_token_logits, top_k)
         probs = torch.nn.functional.softmax(v, dim=-1)
@@ -73,47 +91,56 @@ def generate(args):
         
         generated = torch.cat([generated, next_token], dim=1)
         
+        # Determine offset for decoding
+        seqlen_offset = input_ids.shape[1]
+        if inference_params is not None:
+             inference_params.seqlen_offset = seqlen_offset
+        
+        # Stream first token
+        word = tokenizer.decode(next_token[0])
+        print(word, end="", flush=True)
+        
         # 2. Decoding Stage (Token by Token)
+        curr_token = next_token
+        
         for _ in range(args.max_new_tokens - 1):
-             # Logits calculation
-             # Truncate if too long
-             if generated.size(1) > config.max_seq_len:
-                  run_input = generated[:, -config.max_seq_len:]
-             else:
-                  run_input = generated
-                  
-             # Naive loop: Recompute Mamba (Stateless) and Titans (Stateless) for stability
-             # We pass titans_state=None because if we pass the *updated* state + the *full* sequence,
-             # Titans will update the state again using the old history = double counting.
-             # Since Mamba requires full sequence (no cache), we must feed full sequence.
-             # Therefore, we must effectively treat Titans as stateless here too (re-scan from scratch).
-             logits, _, _, _ = model(run_input, inference_params=None, titans_state=None)
+             # O(1) Inference: Only pass the LAST token
+             # Mamba uses inference_params cache.
+             # Titans uses titans_state.
+             
+             # Step Mamba Cache
+             if inference_params is not None:
+                 inference_params.seqlen_offset += 1
+                 
+             logits, _, _, titans_state = model(curr_token, inference_params=inference_params, titans_state=titans_state)
              
              next_token_logits = logits[:, -1, :]
              
              # Sampling
-             next_token_logits = next_token_logits / 0.8 
+             next_token_logits = next_token_logits / args.temperature 
              v, i = torch.topk(next_token_logits, top_k)
              probs = torch.nn.functional.softmax(v, dim=-1)
              next_token_idx = torch.multinomial(probs, 1)
              next_token = i.gather(-1, next_token_idx)
              
              generated = torch.cat([generated, next_token], dim=1)
+             curr_token = next_token
              
-             if next_token.item() == tokenizer.eos_token_id:
+             # Stream
+             word = tokenizer.decode(curr_token[0])
+             print(word, end="", flush=True)
+             
+             if curr_token.item() == tokenizer.eos_token_id:
                  break
                 
-    # Decode
-    output_text = tokenizer.decode(generated[0], skip_special_tokens=True)
-    print("-" * 40)
-    print(output_text)
-    print("-" * 40)
+    print("\n" + "-" * 40)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="model_final.pt")
     parser.add_argument("--prompt", type=str, default="The quick brown fox")
-    parser.add_argument("--max_new_tokens", type=int, default=50)
+    parser.add_argument("--max_new_tokens", type=int, default=100)
+    parser.add_argument("--temperature", type=float, default=0.8)
     args = parser.parse_args()
     
     generate(args)

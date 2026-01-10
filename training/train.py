@@ -112,13 +112,17 @@ def train(args):
             try:
                 checkpoint = torch.load(latest_ckpt, map_location=device)
                 
-                # Handle legacy checkpoints (just model weights)
-                if 'model_state_dict' in checkpoint:
-                     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-                     # Optimizer state loading happens after optimizer creation
-                else:
-                     # Old format
-                     model.load_state_dict(checkpoint, strict=False)
+                # Clean state dict keys (remove _orig_mod prefix from torch.compile)
+                state_dict = checkpoint if 'model_state_dict' not in checkpoint else checkpoint['model_state_dict']
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    if k.startswith('_orig_mod.'):
+                        new_state_dict[k[10:]] = v
+                    else:
+                        new_state_dict[k] = v
+                
+                # Load with strict=False to be safe, but now keys should match
+                model.load_state_dict(new_state_dict, strict=False)
                 
                 start_step = max_step
             except Exception as e:
@@ -274,7 +278,7 @@ def train(args):
         if step % 10 == 0:
             print(log_str)
             
-        if step % 100 == 0:
+        if (step > start_step) and (step % args.save_every == 0):
              save_checkpoint(model, optimizers, step)
 
     print("Saving final model...")
@@ -289,6 +293,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrained_path", type=str, default=None, help="Path to pretrained backbone checkpoint")
     parser.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--compile", action="store_true", help="Use torch.compile for speedup")
+    parser.add_argument("--save_every", type=int, default=100, help="Steps between checkpoints")
     parser.add_argument("--training_stage", type=str, default=None, choices=["backbone", "memory"], help="Override config training stage")
     args = parser.parse_args()
     
