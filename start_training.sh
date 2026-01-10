@@ -16,7 +16,7 @@ fi
 # 2. Check Data (Mixed: Code + Reasoning)
 if [ ! -d "data" ] || [ -z "$(ls -A data)" ]; then
     echo "Generating Mixed Data (Code + FineWeb-Edu)..."
-    python3 scripts/prepare_fast.py --output_dir data/ --num_samples 500000 --seq_len 4096
+    python3 scripts/prepare_data.py --output_dir data/ --num_samples 500000 --seq_len 4096
 fi
 
 # 3. Backbone Training (Stage 1) - FULL SCALE
