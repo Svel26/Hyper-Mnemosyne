@@ -1,6 +1,6 @@
 import torch
 import argparse
-from transformers import GPT2TokenizerFast
+from transformers import AutoTokenizer
 from config import HyperMnemosyneConfig
 from model.backbone import HyperMnemosyne
 
@@ -39,7 +39,10 @@ def generate(args):
     model.eval()
     
     # Tokenizer
-    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("Xenova/llama3-tokenizer")
+    except:
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B")
     
     # Try importing InferenceParams (Keeping for future reference, but disabled logic below)
     try:

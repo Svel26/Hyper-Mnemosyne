@@ -7,6 +7,7 @@ class MemoryMLP(nn.Module):
         super().__init__()
         self.w1 = nn.Linear(config.d_model, config.memory_width, bias=False)
         self.w2 = nn.Linear(config.memory_width, config.d_model, bias=False)
+        self.w2.weight.data.zero_() # Ensure memory starts effectively disabled
         self.activation = nn.SiLU()
         
     def forward(self, x):

@@ -7,7 +7,7 @@ from datasets import load_dataset, Dataset
 from transformers import AutoTokenizer
 
 # CONFIG
-MODEL_ID = "gpt2"
+MODEL_ID = "Xenova/llama3-tokenizer" 
 SEQ_LEN = 4096
 NUM_PROC = 4 
 OUTPUT_DIR = "data/"
@@ -16,11 +16,20 @@ def main():
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    tokenizer.pad_token = tokenizer.eos_token 
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    except:
+        print("Falling back to meta-llama/Meta-Llama-3-8B (Requires Auth)")
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B")
+        
+    # Llama 3 has no pad token by default, use eos or reserved
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        
     tokenizer.model_max_length = 100000 # Silence warnings
 
     print(f"🚀 Starting Multi-Threaded Prep on {multiprocessing.cpu_count()} cores...")
+    print(f"🧠 Tokenizer: {MODEL_ID} (Vocab: {len(tokenizer)})")
 
     # 1. Load Data
     print("📥 Loading datasets...")
@@ -88,19 +97,36 @@ def main():
         context_ids_list = []
         target_ids_list = []
         
+        # Determine Mask Token ID
+        # Llama 3 often uses <|reserved_special_token_0|> or similar if no mask is defined
+        # We'll try to find a suitable reserved token or use BOS/EOS as placeholder if desperate, 
+        # but ideally we use a reserved token.
+        # Check for mask token
+        if tokenizer.mask_token_id is not None:
+             mask_id = tokenizer.mask_token_id
+        else:
+             # Use a reserved token if available, typically indices > 128000
+             # 128255 is usually padding/reserved. Let's safe pick 128000 if vocab large enough
+             if len(tokenizer) > 128000:
+                 mask_id = 128000 # Specific reserved token
+             else:
+                 mask_id = tokenizer.eos_token_id # Fallback (suboptimal but safe)
+        
         for seq in batch_input_ids:
             input_tensor = torch.tensor(seq, dtype=torch.long)
             
             # Target is just clean input (clone)
             target_ids = input_tensor.clone()
             
-            # Context is noisy
+            # Context is masked
             noisy_seq = input_tensor.clone()
             
             mask_prob = 0.15
             mask_indices = torch.rand(len(noisy_seq)) < mask_prob
-            random_tokens = torch.randint(0, len(tokenizer), (mask_indices.sum(),))
-            noisy_seq[mask_indices] = random_tokens
+            
+            # MASKING (Not Replacement)
+            # Replace selected tokens with MASK token
+            noisy_seq[mask_indices] = mask_id
             
             context_ids_list.append(noisy_seq.tolist())
             target_ids_list.append(target_ids.tolist())

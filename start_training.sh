@@ -26,7 +26,7 @@ python3 -m training.train \
     --data_dir data/ \
     --batch_size 1 \
     --grad_accum_steps 16 \
-    --max_steps 50000 \
+    --max_steps 150000 \
     --compile \
     --training_stage backbone
 

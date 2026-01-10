@@ -6,7 +6,7 @@ class HyperMnemosyneConfig:
     # Target: ~350M parameters
     d_model: int = 1024
     n_layers: int = 24
-    vocab_size: int = 50257
+    vocab_size: int = 128256
     
     # Manifold-Constrained Hyper-Connections
     mhc_branches: int = 4

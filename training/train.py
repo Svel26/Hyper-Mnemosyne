@@ -139,6 +139,13 @@ def train(args):
                 param.requires_grad = True
             else:
                 param.requires_grad = False
+    elif config.training_stage == "backbone":
+        print("Stage 1: Freezing Titans Memory (w/ Zero-Init) to prevent drift.")
+        for name, param in model.named_parameters():
+             if "memory" in name:
+                 param.requires_grad = False
+             else:
+                 param.requires_grad = True
                 
     # 2. Variable Grouping
     # get_param_groups returns dicts, need to unpack for separate optimizers manually if we want different classes
@@ -233,7 +240,7 @@ def train(args):
                 shift_logits = logits_tgt[..., :-1, :].contiguous()
                 shift_labels = target_ids[..., 1:].contiguous()
                 
-                loss_gen = nn.functional.cross_entropy(shift_logits.view(-1, config.vocab_size), shift_labels.view(-1), ignore_index=50256)
+                loss_gen = nn.functional.cross_entropy(shift_logits.view(-1, config.vocab_size), shift_labels.view(-1), ignore_index=-100)
                 
                 # B. JEPA Latent Loss
                 # We predict hidden_tgt from hidden_ctx using jepa_predictor. 
@@ -256,7 +263,7 @@ def train(args):
                 shift_logits = logits_ctx[..., :-1, :].contiguous()
                 shift_labels = input_ids[..., 1:].contiguous()
                  
-                loss_gen = nn.functional.cross_entropy(shift_logits.view(-1, config.vocab_size), shift_labels.view(-1), ignore_index=50256)
+                loss_gen = nn.functional.cross_entropy(shift_logits.view(-1, config.vocab_size), shift_labels.view(-1), ignore_index=-100)
                 
                 # We can also use the explicit memory_loss (reconstruction) if returned
                 # memory_loss from forward is "surprise"
