@@ -1,26 +1,79 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
-env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
 venv/
-.env
+env/
+ENV/
+.venv
+
+# PyTorch Models & Checkpoints
+*.pt
+*.pth
+*.ckpt
+model_step_*.pt
+model_final.pt
 
 # Data
 data/
-!data/.keep
-data/fineweb/
-data/fineweb_prod/
-data/fineweb_large/
 *.parquet
+*.csv
+*.arrow
+
+# Logs
+*.log
+training.log
+training_test.log
+wandb/
+tensorboard/
+runs/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.DS_Store
 
-# Checkpoints (Ignore trained weights)
-*.pt
-*.pth
-checkpoints/
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+Thumbs.db
+.Trash-*
+
+# Temporary files
+tmp/
+temp/
+*.tmp

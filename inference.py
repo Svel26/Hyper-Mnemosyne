@@ -1,6 +1,13 @@
 import torch
 import argparse
+import sys
+import os
 from transformers import AutoTokenizer
+
+# Add project root to path if not installed as package
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from config import HyperMnemosyneConfig
 from model.backbone import HyperMnemosyne
 
@@ -43,6 +50,8 @@ def generate(args):
         tokenizer = AutoTokenizer.from_pretrained("Xenova/llama3-tokenizer")
     except:
         tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B")
+    
+    print(f"🔍 Inference Tokenizer Vocab Size: {len(tokenizer)}")
     
     # Try importing InferenceParams (Keeping for future reference, but disabled logic below)
     try:

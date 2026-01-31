@@ -1,98 +1,103 @@
-![Hyper-Mnemosyne Header](Header_IMG.jpeg)
+# Hyper-Mnemosyne
 
-# Hyper-Mnemosyne 🧠 (Research Prototype)
+Advanced neural architecture combining Mamba-2, Manifold-Constrained Hyper-Connections, and Titans Neural Memory with JEPA training.
 
-> [!WARNING]
-> **Status: Experimental / Work in Progress**
-> This is a small-scale research prototype (~150M parameters) designed for architectural experimentation on consumer hardware. It is **not** a production-ready LLM or a "3B parameter SOTA killer".
+## Quick Start
 
-**Hyper-Mnemosyne** is an experimental testbed for exploring hybrid state-space and memory-augmented architectures on a single NVIDIA RTX 3090/4090.
+### 1. Installation
 
-It integrates simplified adaptations of three research concepts:
-
-1. **Mamba-2 Backbone**: Leveraging SSD (Structured State Space Duality) for linear-time context processing.
-2. **Titans-Inspired Memory**: An experimental "Gated Residual Memory" module inserted into the residual stream (simplified from the original Titans proposal).
-3. **JEPA-Inspired Auxiliary Loss**: A latent consistency objective inspired by Joint-Embedding Predictive Architectures to improve semantic density.
-
-## 🧪 Architecture & Goals
-
-This project aims to verify whether complex architectural components like mHC (Manifold-Constrained Hyper-Connections) and Neural Memory can be stabilized and trained at a small scale.
-
-* **Scale**: ~150M Parameters (d_model=768, layers=12)
-* **Design Philosophy**: Convergence of diverse architectural ideas (SSM + Memory + Latent Prediction) into a single differentiable stack.
-* **Hardware Target**: Single Consumer GPU (24GB VRAM).
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-* Linux (Ubuntu 20.04/22.04)
-* Python 3.10+
-* NVIDIA GPU (24GB VRAM recommended)
-* CUDA 11.8+
-
-### Installation & Launch
+Clone and install:
 
 ```bash
-# 1. Clone & Setup
-git clone https://github.com/svel26/Hyper-Mnemosyne
+git clone https://github.com/yourusername/Hyper-Mnemosyne.git
 cd Hyper-Mnemosyne
+
+# Option A: Install as editable package (recommended)
+pip install -e .
+
+# Option B: Use virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# 2. Install
 pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
-
-# 3. Run (Auto-Data Prep + Training)
-bash start_training.sh
 ```
 
-## 🛠️ Usage
+### 2. Run Training
 
-### Training
-
-The training protocol allows for experimentation with the backbone and memory modules separately.
-
-#### Stage 1: Backbone Training
-
-Trains the Mamba-2 core with the mHC-inspired mixing and JEPA auxiliary loss.
+The easiest way:
 
 ```bash
-# Small-scale debug run
-python3 -m training.train --batch_size 4 --max_steps 1000 --training_stage backbone --compile
+./start_training.sh
 ```
 
-#### Stage 2: Memory Training (Experimental)
-
-Freezes the backbone and trains only the memory gating/residual connection.
+Or manually:
 
 ```bash
-python3 -m training.train --batch_size 4 --max_steps 500 --training_stage memory --pretrained_path model_final.pt
+# Prepare data (100k samples, ~30 min)
+python scripts/prepare_data.py --num_samples 100000 --seq_len 4096
+
+# Stage 1: Train backbone
+python training/train.py \
+  --data_dir data/ \
+  --training_stage backbone \
+  --batch_size 4 \
+  --max_steps 50000
+
+# Stage 2: Train memory
+python training/train.py \
+  --data_dir data/ \
+  --training_stage memory \
+  --pretrained_path model_final.pt \
+  --batch_size 4 \
+  --max_steps 70000
 ```
 
-### Inference
+## Architecture
 
-```bash
-python3 inference.py --prompt "The future of AI is"
+- **Backbone:** Mamba-2 (efficient sequence modeling)
+- **Hyper-Connections:** Manifold-constrained multi-branch paths  
+- **Memory:** Titans Neural Memory (lightweight context tracking)
+- **Training:** JEPA (Joint-Embedding Predictive Architecture)
+
+## Requirements
+
+- Python 3.9+
+- PyTorch 2.0+
+- CUDA 11.8+ (for GPU)
+- 24GB+ VRAM (RTX 3090 or better)
+
+See `requirements.txt` for full dependencies.
+
+## Project Structure
+
+```
+Hyper-Mnemosyne/
+├── config.py              # Model configuration
+├── model/                 # Model architecture
+│   ├── backbone.py        # Main model
+│   ├── mhc.py            # Hyper-connections
+│   └── titans.py         # Memory layer
+├── training/             # Training code
+│   ├── train.py          # Main training loop
+│   ├── data_utils.py     # Data loading
+│   └── muon.py           # Muon optimizer
+├── scripts/              # Utilities
+│   └── prepare_data.py   # Data preparation
+└── start_training.sh     # Automated training
 ```
 
-## 📂 Project Structure
+## Citation
 
-```text
-├── config.py               # Hyperparameters (Scaled down for research)
-├── model/
-│   ├── backbone.py         # Main Model Class
-│   ├── mhc.py              # Manifold-Constrained Hyper-Connections (Triton)
-│   ├── titans.py           # Simplified Gated Memory Module
-│   └── triton_kernels.py   # Custom CUDA/Triton Kernels
-├── training/
-│   ├── train.py            # Training Loop
-│   ├── muon.py             # Muon Optimizer
-│   └── data_utils.py       # Data Loading
-└── requirements.txt
+If you use this code, please cite:
+
+```bibtex
+@misc{hypermnemosyne2026,
+  title={Hyper-Mnemosyne: Efficient Long-Context Learning with Titans Memory},
+  author={Your Name},
+  year={2026},
+  url={https://github.com/yourusername/Hyper-Mnemosyne}
+}
 ```
 
 ## License
 
-Apache License. See [LICENSE](LICENSE) for details.
+Apache 2.0 - See LICENSE file

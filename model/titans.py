@@ -7,7 +7,12 @@ class MemoryMLP(nn.Module):
         super().__init__()
         self.w1 = nn.Linear(config.d_model, config.memory_width, bias=False)
         self.w2 = nn.Linear(config.memory_width, config.d_model, bias=False)
-        self.w2.weight.data.zero_() # Ensure memory starts effectively disabled
+        
+        # FIX: Use small random init instead of zero-init
+        # Zero-init prevents gradients from flowing
+        # Small init allows gradual learning with warmup
+        nn.init.normal_(self.w2.weight, mean=0.0, std=0.02)
+        
         self.activation = nn.SiLU()
         
     def forward(self, x):

@@ -18,12 +18,12 @@ def sinkhorn_kernel(
     Computes Sinkhorn normalization for N=4 matrix.
     W is (N, N). Flatted.
     """
-    # Load W [16]
-    w_offsets = tl.arange(0, 16)
+    # Load W [N*N]
+    w_offsets = tl.arange(0, N*N)
     w_flat = tl.load(w_ptr + w_offsets)
     
-    # View as [4, 4] for efficient reduction matches N=4 constraint
-    w = tl.reshape(w_flat, (4, 4))
+    # View as [N, N]
+    w = tl.reshape(w_flat, (N, N))
     
     # Sinkhorn Iterations (Log Space)
     for _ in range(n_iters):
@@ -53,7 +53,7 @@ def sinkhorn_kernel(
         w = w - lse_col[None, :]
 
     # Final Exp and Store
-    w_out = tl.reshape(tl.exp(w), (16,))
+    w_out = tl.reshape(tl.exp(w), (N*N,))
     tl.store(out_ptr + w_offsets, w_out)
 
 
@@ -64,22 +64,26 @@ def fused_mhc_forward_kernel(
     Y_ptr,          # [B, S, N, D]
     stride_xb, stride_xs, stride_xn, stride_xd,
     stride_yb, stride_ys, stride_yn, stride_yd,
-    B, S, N, D,
+    B, S, D,
+    N: tl.constexpr,
     BLOCK_SIZE_D: tl.constexpr
 ):
     pid_b = tl.program_id(0)
     pid_s = tl.program_id(1)
     
-    # Load P scalars manually
-    # Row 0
-    p00 = tl.load(P_ptr + 0); p01 = tl.load(P_ptr + 1); p02 = tl.load(P_ptr + 2); p03 = tl.load(P_ptr + 3)
-    # Row 1
-    p10 = tl.load(P_ptr + 4); p11 = tl.load(P_ptr + 5); p12 = tl.load(P_ptr + 6); p13 = tl.load(P_ptr + 7)
-    # Row 2
-    p20 = tl.load(P_ptr + 8); p21 = tl.load(P_ptr + 9); p22 = tl.load(P_ptr + 10); p23 = tl.load(P_ptr + 11)
-    # Row 3
-    p30 = tl.load(P_ptr + 12); p31 = tl.load(P_ptr + 13); p32 = tl.load(P_ptr + 14); p33 = tl.load(P_ptr + 15)
-
+    # Load P scalars manually? No, load full P matrix N*N
+    # P is small, we can load it into register
+    # But for cleaner dynamic N, let's load it as a block?
+    # P is [N, N]. N is typically 4, can be 8.
+    
+    # For fully dynamic N in triton loop, we might need loops.
+    # But since N is small constexpr, we can unroll.
+    
+    # Load P: [N, N]
+    p_offsets = tl.arange(0, N*N)
+    P_flat = tl.load(P_ptr + p_offsets)
+    P = tl.reshape(P_flat, (N, N))
+    
     # Pointers
     x_base = X_ptr + pid_b * stride_xb + pid_s * stride_xs
     y_base = Y_ptr + pid_b * stride_yb + pid_s * stride_ys
@@ -90,31 +94,74 @@ def fused_mhc_forward_kernel(
         offs = d_start + d_offsets
         mask = offs < D
         
-        # Load X columns for all 4 branches
-        x0 = tl.load(x_base + 0 * stride_xn + offs * stride_xd, mask=mask, other=0.0)
-        x1 = tl.load(x_base + 1 * stride_xn + offs * stride_xd, mask=mask, other=0.0)
-        x2 = tl.load(x_base + 2 * stride_xn + offs * stride_xd, mask=mask, other=0.0)
-        x3 = tl.load(x_base + 3 * stride_xn + offs * stride_xd, mask=mask, other=0.0)
+        # Load X columns for all N branches
+        # We need a way to load variable number of pointers?
+        # Triton doesn't support list of tensors well.
+        # We iterate over rows of P (output branches)
         
-        # Compute Y = P @ X
+        # Pre-load X inputs
+        # X: [N, BLOCK_SIZE_D]
+        # We can construct a block pointer? 
+        # Or simple load loop.
         
-        # Y0 = P00*X0 + P01*X1 + ...
-        y0 = p00*x0 + p01*x1 + p02*x2 + p03*x3
+        # Let's use a temporary accumulator for result
         
-        # Y1
-        y1 = p10*x0 + p11*x1 + p12*x2 + p13*x3
+        # Implementation constraint:
+        # Triton dynamic indexing is tricky. 
+        # But we can iterate over range(N) because N is constexpr.
         
-        # Y2
-        y2 = p20*x0 + p21*x1 + p22*x2 + p23*x3
+        # 1. Load all input branches X_j
+        # We can load X as [N, BLOCK_SIZE_D] using 2D load if strides allow? 
+        # X is [B, S, N, D]. Stride_xn is the stride for N. Stride_xd is 1 usually.
+        # We can load a block [N, BLOCK_SIZE_D]. 
+        # Be careful with strides.
         
-        # Y3
-        y3 = p30*x0 + p31*x1 + p32*x2 + p33*x3
+        # Advanced: Load [N, BLOCK_SIZE_D] block directly
+        # x_ptr_base = x_base + offs * stride_xd
+        # But stride_xn might be large? No, N is adjacent usually.
+        # Actually X is [B, S, N, D].
+        # So X[b,s] is [N, D].
+        # We are at X[b,s].
+        # It is contiguous in memory as N x D matrix (row major usually).
+        # We want to load columns [N, BLOCK_SIZE_D].
+        # We can use tl.load using 2D offsets.
         
-        # Store
-        tl.store(y_base + 0 * stride_yn + offs * stride_yd, y0, mask=mask)
-        tl.store(y_base + 1 * stride_yn + offs * stride_yd, y1, mask=mask)
-        tl.store(y_base + 2 * stride_yn + offs * stride_yd, y2, mask=mask)
-        tl.store(y_base + 3 * stride_yn + offs * stride_yd, y3, mask=mask)
+        n_range = tl.arange(0, N)
+        d_range = offs
+        
+        # Ptrs: [N, BLOCK]
+        # X_ptrs = x_base + (n_range[:, None] * stride_xn) + (d_range[None, :] * stride_xd)
+        X_vals = tl.load(x_base + (n_range[:, None] * stride_xn) + (d_range[None, :] * stride_xd), 
+                         mask=mask[None, :], other=0.0)
+                         
+        # Computing Y = P @ X
+        # P: [N, N]
+        # X: [N, BLOCK]
+        # Y: [N, BLOCK]
+        # Y_ij = sum_k (P_ik * X_kj)
+        
+        # Expand P to [N, N, 1] (Broadcasting axis 2)
+        # Expand X to [1, N, BLOCK] (Broadcasting axis 0)
+        # Prod: [N, N, BLOCK]
+        
+        # Triton slicing for broadcast
+        P_b = P[:, :, None]
+        X_b = X_vals[None, :, :]
+        
+        Y_vals = tl.sum(P_b * X_b, axis=1)
+        # But for small matrices, standard matrix mult:
+        
+        # If tl.dot doesn't work for non-block types efficiently, manual loop:
+        # P [N, N], X [N, Block]
+        # Y_i = sum_j (P_ij * X_j)
+        
+        # Actually P is small, X is small-ish (BLOCK=128).
+        # tl.dot works on blocks.
+        # We need P converted to proper float type.
+        
+        # Store Y
+        tl.store(y_base + (n_range[:, None] * stride_yn) + (d_range[None, :] * stride_yd), 
+                 Y_vals, mask=mask[None, :])
 
 
 # -----------------------------------------------------------------------------
@@ -130,12 +177,12 @@ class FusedMHCFunction(Function):
         """
         B, S, N, D = x.shape
         # Assertion added to prevent silent failures if config.mhc_branches != 4
-        assert N == 4, f"MHC Triton kernel currently hardcoded for N=4, got N={N}"
+        # assert N == 4, f"MHC Triton kernel currently hardcoded for N=4, got N={N}"
         
         # Sinkhorn
         P = torch.empty_like(w)
         # Using sinkhorn_kernel (renamed from sinkhorn_knopp_kernel)
-        sinkhorn_kernel[(1,)](w, P, N=4, n_iters=n_iters)
+        sinkhorn_kernel[(1,)](w, P, N=N, n_iters=n_iters)
         
         # Mixing
         y = torch.empty_like(x)
@@ -147,8 +194,10 @@ class FusedMHCFunction(Function):
             x, P, y,
             x.stride(0), x.stride(1), x.stride(2), x.stride(3),
             y.stride(0), y.stride(1), y.stride(2), y.stride(3),
-            B, S, N, D,
-            BLOCK_SIZE_D=BLOCK_SIZE_D
+            B, S, D,
+            N=N,
+            BLOCK_SIZE_D=BLOCK_SIZE_D,
+            num_warps=4 # Ensure sufficient warps for dot ops
         )
         
         ctx.save_for_backward(x, P, w)

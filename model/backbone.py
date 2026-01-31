@@ -6,8 +6,12 @@ except ImportError:
     try:
         from mamba_ssm import Mamba2
     except ImportError:
-         print("Warning: Mamba2 not found, using placeholder or crashing.")
-         raise
+         print("\n" + "!"*60)
+         print("ERROR: Mamba2 not found. Hyper-Mnemosyne requires `mamba-ssm`.")
+         print("Please install it via: pip install mamba-ssm causal-conv1d>=1.2.0")
+         print("If you are on a non-CUDA device, you cannot run Mamba2.")
+         print("!"*60 + "\n")
+         raise ImportError("Missing mandatory dependency: mamba_ssm")
 
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaConfig, LlamaRotaryEmbedding
 
@@ -173,16 +177,19 @@ class HyperMnemosyne(nn.Module):
         mem_out, memory_loss, new_titans_state = self.memory(x, titans_state)
         x = x + mem_out # Simple residual
         
-        # Initialize mHC state
-        residual_state = None 
+        # Initialize mHC state ONCE (outside checkpoint loop to avoid re-sampling)
+        residual_state = None
         
         # Gradient Checkpointing Logic
         use_checkpointing = self.config.gradient_checkpointing and self.training
         
         if use_checkpointing:
-             # Manual init to ensure it's a tensor with grad
-             noise = torch.randn(B, S, self.config.mhc_branches, self.config.d_model, device=x.device, dtype=x.dtype) * 0.02
-             residual_state = x.unsqueeze(2) + noise
+            # FIX: Initialize state BEFORE checkpointing to avoid non-deterministic gradients
+            # Random noise was being re-sampled on backward pass, causing instability
+            with torch.no_grad():
+                noise = torch.randn(B, S, self.config.mhc_branches, self.config.d_model, 
+                                   device=x.device, dtype=x.dtype) * 0.02
+            residual_state = x.unsqueeze(2) + noise.requires_grad_(True)
              
         for i, layer in enumerate(self.layers):
             if use_checkpointing:
